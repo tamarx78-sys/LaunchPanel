@@ -145,11 +145,12 @@ fn main() -> eframe::Result {
     let config = load_config();
 
     let hk = config.settings.hotkey.clone();
-    
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([config.settings.window.width, 600.0])
-            .with_resizable(false)
+            .with_min_inner_size([200.0, 200.0])
+            .with_resizable(true)
             .with_maximize_button(false)
             .with_minimize_button(true)
             .with_close_button(true)
@@ -282,6 +283,8 @@ struct MyApp {
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let rect = ctx.content_rect();
+        let window_width = rect.width();
         let showing = self.show_requested.swap(false, Ordering::SeqCst);
 
         if self.settings_requested.swap(false, Ordering::SeqCst) {
@@ -319,44 +322,74 @@ impl eframe::App for MyApp {
                 });
             });
 
-            for (index, item) in self.config.items.iter().enumerate() {
-                let response =
-                    ui.add_sized([ui.available_width(), 32.0], egui::Button::new(&item.name));
-                if response.clicked() {
-                    let _ = open::that(&item.path);
+            let column_width = self.config.settings.window.width;
+
+            let column_count = (window_width / column_width).floor().max(1.0) as usize;
+
+            // アイテム数より列数が多くならないようにする
+            let column_count = column_count.min(self.config.items.len().max(1));
+
+            // 1列あたりの行数
+            let row_count = (self.config.items.len() + column_count - 1) / column_count;
+
+            ui.columns(column_count, |columns| {
+                for (column_index, column_ui) in columns.iter_mut().enumerate() {
+                    for row_index in 0..row_count {
+                        // 縦方向に並べてから、次の列へ移る
+                        let index = column_index * row_count + row_index;
+
+                        let Some(item) = self.config.items.get(index) else {
+                            continue;
+                        };
+
+                        let response = column_ui.add_sized(
+                            [column_ui.available_width(), 32.0],
+                            egui::Button::new(&item.name),
+                        );
+
+                        if response.clicked() {
+                            let _ = open::that(&item.path);
+                        }
+
+                        response.context_menu(|ui| {
+                            if ui.button("編集").clicked() {
+                                self.edit_index = index;
+
+                                self.edit_name = item.name.clone();
+                                self.edit_path = item.path.clone();
+
+                                self.show_edit_window = true;
+
+                                ui.close();
+                            }
+
+                            if ui.button("削除").clicked() {
+                                self.delete_index = index;
+                                self.show_delete_window = true;
+
+                                ui.close();
+                            }
+
+                            ui.separator();
+
+                            if ui.button("上へ移動").clicked() {
+                                move_up = Some(index);
+                                ui.close();
+                            }
+
+                            if ui.button("下へ移動").clicked() {
+                                move_down = Some(index);
+                                ui.close();
+                            }
+                        });
+                    }
                 }
-                response.context_menu(|ui| {
-                    if ui.button("編集").clicked() {
-                        self.edit_index = index;
-
-                        self.edit_name = item.name.clone();
-                        self.edit_path = item.path.clone();
-
-                        self.show_edit_window = true;
-
-                        ui.close();
-                    }
-
-                    if ui.button("削除").clicked() {
-                        self.delete_index = index;
-                        self.show_delete_window = true;
-                        ui.close();
-                    }
-
-                    ui.separator();
-
-                    if ui.button("上へ移動").clicked() {
-                        move_up = Some(index);
-                        ui.close();
-                    }
-
-                    if ui.button("下へ移動").clicked() {
-                        move_down = Some(index);
-                        ui.close();
-                    }
-                });
-            }
-
+            });
+            // 一時的に表示
+            ui.label(format!(
+                "Width: {:.0}  Columns: {}",
+                window_width, column_count
+            ));
             // ドラッグ＆ドロップの説明
             ui.add_space(10.0);
             ui.separator();
@@ -511,7 +544,7 @@ impl eframe::App for MyApp {
                         .num_columns(2)
                         .spacing([16.0, 8.0])
                         .show(ui, |ui| {
-                            ui.label("横幅 (px)");
+                            ui.label("1列の幅 (px)");
 
                             ui.add(
                                 egui::DragValue::new(&mut self.settings_edit.window.width)
