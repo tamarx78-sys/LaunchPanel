@@ -1,20 +1,22 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod hotkey;
+mod icon;
 mod single_instance;
 
 use eframe::egui;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 use tray_icon::menu::MenuEvent;
 use tray_icon::{
-    menu::{Menu, MenuItem},
     Icon, TrayIconBuilder,
+    menu::{Menu, MenuItem},
 };
 
 const DEFAULT_WINDOW_WIDTH: f32 = 280.0;
@@ -46,13 +48,13 @@ struct HotkeyConfig {
     key: String,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 struct Config {
     settings: Settings,
     items: Vec<LauncherItem>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 struct Settings {
     window: WindowConfig,
     hotkey: HotkeyConfig,
@@ -77,24 +79,6 @@ impl Default for HotkeyConfig {
     }
 }
 
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            window: WindowConfig::default(),
-            hotkey: HotkeyConfig::default(),
-        }
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            settings: Settings::default(),
-            items: Vec::new(),
-        }
-    }
-}
-
 fn load_tray_icon() -> Icon {
     let png_bytes = include_bytes!("../appicon.png");
 
@@ -105,6 +89,32 @@ fn load_tray_icon() -> Icon {
     let (width, height) = image.dimensions();
 
     Icon::from_rgba(image.into_raw(), width, height).expect("トレイアイコン生成失敗")
+}
+
+fn load_fallback_texture(ctx: &egui::Context) -> egui::TextureHandle {
+    let image = image::load_from_memory(include_bytes!("../appicon.png"))
+        .expect("フォールバックアイコン読込失敗")
+        .into_rgba8();
+    let size = [image.width() as usize, image.height() as usize];
+    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
+
+    ctx.load_texture(
+        "launcher-item-fallback",
+        color_image,
+        egui::TextureOptions::LINEAR,
+    )
+}
+
+fn load_item_texture(ctx: &egui::Context, path: &str) -> Option<egui::TextureHandle> {
+    let image = icon::load(path)?;
+    let color_image =
+        egui::ColorImage::from_rgba_premultiplied([image.width, image.height], &image.rgba);
+
+    Some(ctx.load_texture(
+        format!("launcher-item-icon:{path}"),
+        color_image,
+        egui::TextureOptions::LINEAR,
+    ))
 }
 
 fn main() -> eframe::Result {
@@ -245,6 +255,9 @@ fn main() -> eframe::Result {
             Ok(Box::new(MyApp {
                 config: config.clone(),
 
+                icon_cache: HashMap::new(),
+                fallback_icon: load_fallback_texture(&cc.egui_ctx),
+
                 show_add_window: false,
 
                 new_name: String::new(),
@@ -278,6 +291,9 @@ fn main() -> eframe::Result {
 struct MyApp {
     config: Config,
 
+    icon_cache: HashMap<String, egui::TextureHandle>,
+    fallback_icon: egui::TextureHandle,
+
     show_add_window: bool,
 
     new_name: String,
@@ -305,8 +321,33 @@ struct MyApp {
     suppress_auto_hide_until_focused: bool,
 }
 
+impl MyApp {
+    fn refresh_icon_cache(&mut self, ctx: &egui::Context) {
+        let paths: Vec<String> = self
+            .config
+            .items
+            .iter()
+            .map(|item| item.path.clone())
+            .collect();
+
+        self.icon_cache.retain(|path, _| paths.contains(path));
+
+        for path in paths {
+            if self.icon_cache.contains_key(&path) {
+                continue;
+            }
+
+            let texture =
+                load_item_texture(ctx, &path).unwrap_or_else(|| self.fallback_icon.clone());
+            self.icon_cache.insert(path, texture);
+        }
+    }
+}
+
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.refresh_icon_cache(ctx);
+
         let showing = self.show_requested.swap(false, Ordering::SeqCst);
 
         let window_width = ctx
@@ -377,7 +418,7 @@ impl eframe::App for MyApp {
             let column_count = column_count.min(self.config.items.len().max(1));
 
             // 1列あたりの行数
-            let row_count = (self.config.items.len() + column_count - 1) / column_count;
+            let row_count = self.config.items.len().div_ceil(column_count);
 
             ui.columns(column_count, |columns| {
                 for (column_index, column_ui) in columns.iter_mut().enumerate() {
@@ -389,9 +430,16 @@ impl eframe::App for MyApp {
                             continue;
                         };
 
+                        let texture = self
+                            .icon_cache
+                            .get(&item.path)
+                            .unwrap_or(&self.fallback_icon);
+                        let image =
+                            egui::Image::new(texture).fit_to_exact_size(egui::vec2(20.0, 20.0));
+
                         let response = column_ui.add_sized(
-                            [column_ui.available_width(), 32.0],
-                            egui::Button::new(&item.name),
+                            [column_ui.available_width(), 36.0],
+                            egui::Button::new((image, item.name.as_str(), egui::Atom::grow())),
                         );
 
                         if response.clicked() {
@@ -443,18 +491,18 @@ impl eframe::App for MyApp {
 
             ui.small("ドラッグ＆ドロップで追加できます");
 
-            if let Some(index) = move_up {
-                if index > 0 {
-                    self.config.items.swap(index, index - 1);
-                    save_config(&self.config);
-                }
+            if let Some(index) = move_up
+                && index > 0
+            {
+                self.config.items.swap(index, index - 1);
+                save_config(&self.config);
             }
 
-            if let Some(index) = move_down {
-                if index + 1 < self.config.items.len() {
-                    self.config.items.swap(index, index + 1);
-                    save_config(&self.config);
-                }
+            if let Some(index) = move_down
+                && index + 1 < self.config.items.len()
+            {
+                self.config.items.swap(index, index + 1);
+                save_config(&self.config);
             }
         });
 
@@ -494,26 +542,24 @@ impl eframe::App for MyApp {
                 ui.label("パス");
                 ui.text_edit_singleline(&mut self.new_path);
 
-                if ui.button("登録").clicked() {
-                    if !self.new_path.trim().is_empty() {
-                        let name = if self.new_name.trim().is_empty() {
-                            generate_name(&self.new_path)
-                        } else {
-                            self.new_name.clone()
-                        };
+                if ui.button("登録").clicked() && !self.new_path.trim().is_empty() {
+                    let name = if self.new_name.trim().is_empty() {
+                        generate_name(&self.new_path)
+                    } else {
+                        self.new_name.clone()
+                    };
 
-                        self.config.items.push(LauncherItem {
-                            name,
-                            path: self.new_path.clone(),
-                        });
+                    self.config.items.push(LauncherItem {
+                        name,
+                        path: self.new_path.clone(),
+                    });
 
-                        save_config(&self.config);
+                    save_config(&self.config);
 
-                        self.new_name.clear();
-                        self.new_path.clear();
+                    self.new_name.clear();
+                    self.new_path.clear();
 
-                        self.show_add_window = false;
-                    }
+                    self.show_add_window = false;
                 }
                 if ui.button("キャンセル").clicked() {
                     self.new_name.clear();

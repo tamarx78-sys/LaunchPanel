@@ -63,14 +63,7 @@ pub fn register(id: i32, ctrl: bool, alt: bool, shift: bool, win: bool, key: &st
 
     unsafe { RegisterHotKey(None, id, modifiers, vk).is_ok() }
 }
-pub fn run<F>(
-    ctrl: bool,
-    alt: bool,
-    shift: bool,
-    win: bool,
-    key: &str,
-    mut callback: F,
-)
+pub fn run<F>(ctrl: bool, alt: bool, shift: bool, win: bool, key: &str, mut callback: F)
 where
     F: FnMut(),
 {

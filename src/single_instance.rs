@@ -1,10 +1,10 @@
-use windows::core::HSTRING;
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, WAIT_OBJECT_0,
+    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, WAIT_OBJECT_0,
 };
 use windows::Win32::System::Threading::{
-    CreateEventW, CreateMutexW, SetEvent, WaitForSingleObject, INFINITE,
+    CreateEventW, CreateMutexW, INFINITE, SetEvent, WaitForSingleObject,
 };
+use windows::core::HSTRING;
 
 #[cfg(debug_assertions)]
 const MUTEX_NAME: &str = "Local\\MiniLauncher_Debug_Mutex";
@@ -71,11 +71,13 @@ impl SingleInstance {
     where
         F: FnMut() + Send + 'static,
     {
-        std::thread::spawn(move || loop {
-            if !self.wait_for_show_request() {
-                break;
+        std::thread::spawn(move || {
+            loop {
+                if !self.wait_for_show_request() {
+                    break;
+                }
+                on_show_requested();
             }
-            on_show_requested();
         });
     }
 
