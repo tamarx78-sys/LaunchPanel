@@ -278,6 +278,7 @@ fn main() -> eframe::Result {
                 settings_requested: settings_requested.clone(),
 
                 window_hidden: false,
+                window_pinned: false,
 
                 suppress_auto_hide_until_focused: true,
 
@@ -314,6 +315,7 @@ struct MyApp {
     settings_requested: Arc<AtomicBool>, // ←追加
 
     window_hidden: bool,
+    window_pinned: bool,
 
     show_settings_window: bool,
     settings_edit: Settings, // ←追加
@@ -368,8 +370,10 @@ impl eframe::App for MyApp {
             || self.show_settings_window
             || self.show_delete_window;
 
-        let auto_hide_requested =
-            !focused && !dialog_open && !self.suppress_auto_hide_until_focused;
+        let auto_hide_requested = !focused
+            && !dialog_open
+            && !self.window_pinned
+            && !self.suppress_auto_hide_until_focused;
 
         if self.settings_requested.swap(false, Ordering::SeqCst) {
             self.settings_edit = self.config.settings.clone();
@@ -386,11 +390,9 @@ impl eframe::App for MyApp {
             self.suppress_auto_hide_until_focused = true;
         } else if !self.window_hidden && close_requested {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-
-            if !dialog_open {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                self.window_hidden = true;
-            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            self.window_hidden = true;
+            self.window_pinned = false;
         } else if !self.window_hidden && auto_hide_requested {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             self.window_hidden = true;
@@ -406,6 +408,15 @@ impl eframe::App for MyApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("+").clicked() {
                         self.show_add_window = true;
+                    }
+
+                    let pin_label = if self.window_pinned {
+                        "● ピン"
+                    } else {
+                        "○ ピン"
+                    };
+                    if ui.selectable_label(self.window_pinned, pin_label).clicked() {
+                        self.window_pinned = !self.window_pinned;
                     }
                 });
             });
