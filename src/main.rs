@@ -20,7 +20,6 @@ use tray_icon::{
 const DEFAULT_WINDOW_WIDTH: f32 = 280.0;
 const MIN_WINDOW_WIDTH: f32 = 200.0;
 const MAX_WINDOW_WIDTH: f32 = 600.0;
-const HOTKEY_ID: i32 = 1;
 
 #[cfg(debug_assertions)]
 const WINDOW_TITLE: &str = "MiniLauncher [DEBUG]";

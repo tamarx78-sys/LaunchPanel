@@ -1,5 +1,5 @@
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, RegisterHotKey, UnregisterHotKey,
+    HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, RegisterHotKey,
 };
 use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, MSG, WM_HOTKEY};
 
@@ -62,11 +62,6 @@ pub fn register(id: i32, ctrl: bool, alt: bool, shift: bool, win: bool, key: &st
     let modifiers = modifiers(ctrl, alt, shift, win);
 
     unsafe { RegisterHotKey(None, id, modifiers, vk).is_ok() }
-}
-pub fn unregister(id: i32) {
-    unsafe {
-        let _ = UnregisterHotKey(None, id);
-    }
 }
 pub fn run<F>(
     ctrl: bool,
