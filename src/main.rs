@@ -246,6 +246,8 @@ fn main() -> eframe::Result {
 
                 window_hidden: false,
 
+                suppress_auto_hide_until_focused: true,
+
                 show_settings_window: false,
                 settings_edit: config.settings.clone(),
             }))
@@ -279,13 +281,34 @@ struct MyApp {
 
     show_settings_window: bool,
     settings_edit: Settings, // ←追加
+
+    suppress_auto_hide_until_focused: bool,
 }
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let rect = ctx.content_rect();
-        let window_width = rect.width();
         let showing = self.show_requested.swap(false, Ordering::SeqCst);
+
+        let window_width = ctx
+            .input(|i| i.viewport().inner_rect)
+            .map(|rect| rect.width())
+            .unwrap_or(self.config.settings.window.width);
+
+        let focused = ctx.input(|i| i.focused);
+
+        if focused {
+            self.suppress_auto_hide_until_focused = false;
+        }
+
+        let close_requested = ctx.input(|i| i.viewport().close_requested());
+
+        let dialog_open = self.show_add_window
+            || self.show_edit_window
+            || self.show_settings_window
+            || self.show_delete_window;
+
+        let auto_hide_requested =
+            !focused && !dialog_open && !self.suppress_auto_hide_until_focused;
 
         if self.settings_requested.swap(false, Ordering::SeqCst) {
             self.settings_edit = self.config.settings.clone();
@@ -297,20 +320,24 @@ impl eframe::App for MyApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             ctx.request_repaint();
-            self.window_hidden = false;
-        }
 
-        if showing {
-            // Skip handling a stale close request in the same frame we restore the window.
-        } else if !self.window_hidden && ctx.input(|i| i.viewport().close_requested()) {
+            self.window_hidden = false;
+            self.suppress_auto_hide_until_focused = true;
+        } else if !self.window_hidden && close_requested {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            // ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+
+            if !dialog_open {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                self.window_hidden = true;
+            }
+        } else if !self.window_hidden && auto_hide_requested {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             self.window_hidden = true;
         }
 
         let mut move_up: Option<usize> = None;
         let mut move_down: Option<usize> = None;
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("MiniLauncher");
