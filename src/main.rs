@@ -1,25 +1,32 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod hotkey;
+mod single_instance;
 
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use std::sync::{
-    Arc,
     atomic::{AtomicBool, Ordering},
+    Arc,
 };
 
 use tray_icon::menu::MenuEvent;
 use tray_icon::{
-    Icon, TrayIconBuilder,
     menu::{Menu, MenuItem},
+    Icon, TrayIconBuilder,
 };
 
 const DEFAULT_WINDOW_WIDTH: f32 = 280.0;
 const MIN_WINDOW_WIDTH: f32 = 200.0;
 const MAX_WINDOW_WIDTH: f32 = 600.0;
 const HOTKEY_ID: i32 = 1;
+
+#[cfg(debug_assertions)]
+const WINDOW_TITLE: &str = "MiniLauncher [DEBUG]";
+
+#[cfg(not(debug_assertions))]
+const WINDOW_TITLE: &str = "MiniLauncher";
 
 #[derive(Serialize, Deserialize, Clone)]
 struct LauncherItem {
@@ -102,6 +109,12 @@ fn load_tray_icon() -> Icon {
 }
 
 fn main() -> eframe::Result {
+    let single_instance = match single_instance::acquire().expect("単一起動の初期化に失敗しました")
+    {
+        single_instance::Acquisition::Primary(instance) => instance,
+        single_instance::Acquisition::Existing => return Ok(()),
+    };
+
     let tray_menu = Menu::new();
 
     let show_item = MenuItem::new("表示", true, None);
@@ -160,7 +173,7 @@ fn main() -> eframe::Result {
     };
 
     eframe::run_native(
-        "MiniLauncher",
+        WINDOW_TITLE,
         options,
         Box::new(move |cc| {
             let mut fonts = egui::FontDefinitions::default();
@@ -182,6 +195,14 @@ fn main() -> eframe::Result {
 
             let show_requested_for_thread = show_requested.clone();
             let repaint_ctx = cc.egui_ctx.clone();
+
+            let show_requested_for_single_instance = show_requested.clone();
+            let repaint_ctx_for_single_instance = cc.egui_ctx.clone();
+
+            single_instance.listen(move || {
+                show_requested_for_single_instance.store(true, Ordering::SeqCst);
+                repaint_ctx_for_single_instance.request_repaint();
+            });
 
             let show_requested_for_hotkey = show_requested.clone();
             let repaint_ctx_for_hotkey = cc.egui_ctx.clone();
