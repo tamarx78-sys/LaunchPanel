@@ -22,6 +22,7 @@ use tray_icon::{
 const DEFAULT_WINDOW_WIDTH: f32 = 280.0;
 const MIN_WINDOW_WIDTH: f32 = 200.0;
 const MAX_WINDOW_WIDTH: f32 = 600.0;
+const MAX_BACKGROUND_IMAGE_DIMENSION: u32 = 2000;
 
 #[cfg(debug_assertions)]
 const WINDOW_TITLE: &str = "MiniLauncher [DEBUG]";
@@ -58,6 +59,17 @@ struct Config {
 struct Settings {
     window: WindowConfig,
     hotkey: HotkeyConfig,
+    #[serde(default)]
+    background_image: String,
+    #[serde(default)]
+    item_button: ItemButtonConfig,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct ItemButtonConfig {
+    background_color: [u8; 3],
+    transparency: u8,
+    text_color: [u8; 3],
 }
 impl Default for WindowConfig {
     fn default() -> Self {
@@ -77,6 +89,47 @@ impl Default for HotkeyConfig {
             key: "M".to_string(),
         }
     }
+}
+
+impl Default for ItemButtonConfig {
+    fn default() -> Self {
+        Self {
+            background_color: [60, 60, 60],
+            transparency: 0,
+            text_color: [180, 180, 180],
+        }
+    }
+}
+
+impl ItemButtonConfig {
+    fn fill_color(&self) -> egui::Color32 {
+        let [red, green, blue] = self.background_color;
+        let transparency = self.transparency.min(100);
+        let alpha = ((100 - u16::from(transparency)) * 255 / 100) as u8;
+
+        egui::Color32::from_rgba_unmultiplied(red, green, blue, alpha)
+    }
+
+    fn text_color(&self) -> egui::Color32 {
+        let [red, green, blue] = self.text_color;
+        egui::Color32::from_rgb(red, green, blue)
+    }
+}
+
+fn edit_rgb_color(ui: &mut egui::Ui, rgb: &mut [u8; 3]) -> egui::Response {
+    let mut color = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+    let response = egui::color_picker::color_edit_button_srgba(
+        ui,
+        &mut color,
+        egui::color_picker::Alpha::Opaque,
+    );
+
+    if response.changed() {
+        let [red, green, blue, _] = color.to_array();
+        *rgb = [red, green, blue];
+    }
+
+    response
 }
 
 fn load_tray_icon() -> Icon {
@@ -115,6 +168,63 @@ fn load_item_texture(ctx: &egui::Context, path: &str) -> Option<egui::TextureHan
         color_image,
         egui::TextureOptions::LINEAR,
     ))
+}
+
+fn load_background_texture(ctx: &egui::Context, path: &str) -> Option<egui::TextureHandle> {
+    if path.trim().is_empty() {
+        return None;
+    }
+
+    if background_image_size_error(path).is_some() {
+        return None;
+    }
+
+    let image = image::open(path).ok()?.into_rgba8();
+    let size = [image.width() as usize, image.height() as usize];
+    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
+
+    Some(ctx.load_texture(
+        format!("background-image:{path}"),
+        color_image,
+        egui::TextureOptions::LINEAR,
+    ))
+}
+
+fn background_image_size_error(path: &str) -> Option<String> {
+    if path.trim().is_empty() {
+        return None;
+    }
+
+    let Ok((width, height)) = image::image_dimensions(path) else {
+        return None;
+    };
+
+    background_image_dimensions_error(width, height)
+}
+
+fn background_image_dimensions_error(width: u32, height: u32) -> Option<String> {
+    if width >= MAX_BACKGROUND_IMAGE_DIMENSION || height >= MAX_BACKGROUND_IMAGE_DIMENSION {
+        Some(format!(
+            "画像サイズが大き過ぎます（{width}×{height}px）。縦横とも2000px未満の画像を指定してください。"
+        ))
+    } else {
+        None
+    }
+}
+
+fn cover_uv(container_size: egui::Vec2, image_size: egui::Vec2) -> egui::Rect {
+    let container_aspect = container_size.x / container_size.y;
+    let image_aspect = image_size.x / image_size.y;
+
+    if image_aspect > container_aspect {
+        let visible_width = container_aspect / image_aspect;
+        let margin = (1.0 - visible_width) / 2.0;
+        egui::Rect::from_min_max(egui::pos2(margin, 0.0), egui::pos2(1.0 - margin, 1.0))
+    } else {
+        let visible_height = image_aspect / container_aspect;
+        let margin = (1.0 - visible_height) / 2.0;
+        egui::Rect::from_min_max(egui::pos2(0.0, margin), egui::pos2(1.0, 1.0 - margin))
+    }
 }
 
 fn main() -> eframe::Result {
@@ -252,11 +362,15 @@ fn main() -> eframe::Result {
                 }
             });
 
+            let background_texture =
+                load_background_texture(&cc.egui_ctx, &config.settings.background_image);
+
             Ok(Box::new(MyApp {
                 config: config.clone(),
 
                 icon_cache: HashMap::new(),
                 fallback_icon: load_fallback_texture(&cc.egui_ctx),
+                background_texture,
 
                 show_add_window: false,
 
@@ -284,6 +398,7 @@ fn main() -> eframe::Result {
 
                 show_settings_window: false,
                 settings_edit: config.settings.clone(),
+                settings_error: None,
             }))
         }),
     )
@@ -294,6 +409,7 @@ struct MyApp {
 
     icon_cache: HashMap<String, egui::TextureHandle>,
     fallback_icon: egui::TextureHandle,
+    background_texture: Option<egui::TextureHandle>,
 
     show_add_window: bool,
 
@@ -319,6 +435,7 @@ struct MyApp {
 
     show_settings_window: bool,
     settings_edit: Settings, // ←追加
+    settings_error: Option<String>,
 
     suppress_auto_hide_until_focused: bool,
 }
@@ -377,6 +494,7 @@ impl eframe::App for MyApp {
 
         if self.settings_requested.swap(false, Ordering::SeqCst) {
             self.settings_edit = self.config.settings.clone();
+            self.settings_error = None;
             self.show_settings_window = true;
         }
 
@@ -400,12 +518,23 @@ impl eframe::App for MyApp {
 
         let mut move_up: Option<usize> = None;
         let mut move_down: Option<usize> = None;
+        let dropped_files = ctx.input(|i| i.raw.dropped_files.clone());
+        let hovered_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
+        let mut background_drop_handled = false;
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("MiniLauncher");
+            if let Some(texture) = &self.background_texture {
+                let rect = ui.max_rect();
+                let image_size = texture.size_vec2();
+                let uv = cover_uv(rect.size(), image_size);
+                ui.painter()
+                    .image(texture.id(), rect, uv, egui::Color32::WHITE);
+            }
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
                     if ui.button("+").clicked() {
                         self.show_add_window = true;
                     }
@@ -418,8 +547,8 @@ impl eframe::App for MyApp {
                     if ui.selectable_label(self.window_pinned, pin_label).clicked() {
                         self.window_pinned = !self.window_pinned;
                     }
-                });
-            });
+                },
+            );
 
             let column_width = self.config.settings.window.width;
 
@@ -430,6 +559,8 @@ impl eframe::App for MyApp {
 
             // 1列あたりの行数
             let row_count = self.config.items.len().div_ceil(column_count);
+            let item_button_fill = self.config.settings.item_button.fill_color();
+            let item_button_text_color = self.config.settings.item_button.text_color();
 
             ui.columns(column_count, |columns| {
                 for (column_index, column_ui) in columns.iter_mut().enumerate() {
@@ -447,10 +578,13 @@ impl eframe::App for MyApp {
                             .unwrap_or(&self.fallback_icon);
                         let image =
                             egui::Image::new(texture).fit_to_exact_size(egui::vec2(20.0, 20.0));
+                        let text =
+                            egui::RichText::new(item.name.as_str()).color(item_button_text_color);
 
                         let response = column_ui.add_sized(
                             [column_ui.available_width(), 36.0],
-                            egui::Button::new((image, item.name.as_str(), egui::Atom::grow())),
+                            egui::Button::new((image, text, egui::Atom::grow()))
+                                .fill(item_button_fill),
                         );
 
                         if response.clicked() {
@@ -516,34 +650,6 @@ impl eframe::App for MyApp {
                 save_config(&self.config);
             }
         });
-
-        // ドロップされたファイルの処理
-        let dropped_files = ctx.input(|i| i.raw.dropped_files.clone());
-
-        let mut changed = false;
-
-        for file in dropped_files {
-            if let Some(path) = file.path {
-                let path_str = path.to_string_lossy().to_string();
-
-                // 重複チェック
-                if self.config.items.iter().any(|i| i.path == path_str) {
-                    continue;
-                }
-
-                let name = generate_name(&path_str);
-
-                self.config.items.push(LauncherItem {
-                    name,
-                    path: path_str,
-                });
-
-                changed = true;
-            }
-        }
-        if changed {
-            save_config(&self.config);
-        }
 
         if self.show_add_window {
             egui::Window::new("項目追加").show(ctx, |ui| {
@@ -659,6 +765,78 @@ impl eframe::App for MyApp {
                             ui.end_row();
                         });
                     ui.separator();
+                    ui.heading("背景");
+                    ui.label("画像パス");
+                    let background_path =
+                        ui.text_edit_singleline(&mut self.settings_edit.background_image);
+                    if background_path.changed() {
+                        self.settings_error = None;
+                    }
+                    ui.small("画像ファイルをこの欄へドラッグ＆ドロップできます");
+                    if hovered_files {
+                        background_path.highlight();
+                    }
+
+                    if let Some(path) = dropped_files.iter().find_map(|file| file.path.as_ref()) {
+                        background_drop_handled = true;
+                        let path = path.to_string_lossy().to_string();
+
+                        if let Some(error) = background_image_size_error(&path) {
+                            self.settings_error = Some(error);
+                        } else {
+                            self.settings_edit.background_image = path;
+                            self.settings_error = None;
+                        }
+                    }
+
+                    if let Some(error) = &self.settings_error {
+                        ui.colored_label(egui::Color32::RED, error);
+                    }
+
+                    ui.separator();
+                    ui.heading("アイテムボタン");
+                    egui::Grid::new("settings_item_button_grid")
+                        .num_columns(2)
+                        .spacing([16.0, 8.0])
+                        .show(ui, |ui| {
+                            ui.label("背景色");
+                            edit_rgb_color(
+                                ui,
+                                &mut self.settings_edit.item_button.background_color,
+                            );
+                            ui.end_row();
+
+                            ui.label("透過率");
+                            ui.add(
+                                egui::Slider::new(
+                                    &mut self.settings_edit.item_button.transparency,
+                                    0..=100,
+                                )
+                                .suffix("%"),
+                            );
+                            ui.end_row();
+
+                            ui.label("テキスト色");
+                            edit_rgb_color(ui, &mut self.settings_edit.item_button.text_color);
+                            ui.end_row();
+                        });
+
+                    if ui.button("デフォルトに戻す").clicked() {
+                        self.settings_edit.item_button = ItemButtonConfig::default();
+                    }
+
+                    let preview_fill = self.settings_edit.item_button.fill_color();
+                    let preview_text_color = self.settings_edit.item_button.text_color();
+                    ui.add_sized(
+                        [ui.available_width(), 36.0],
+                        egui::Button::new(
+                            egui::RichText::new("アイテムボタンのプレビュー")
+                                .color(preview_text_color),
+                        )
+                        .fill(preview_fill),
+                    );
+
+                    ui.separator();
                     ui.heading("ホットキー");
                     egui::Grid::new("settings_hotkey_grid")
                         .num_columns(2)
@@ -699,16 +877,51 @@ impl eframe::App for MyApp {
                             self.show_settings_window = false;
                         }
                         if ui.button("OK").clicked() {
-                            self.config.settings = self.settings_edit.clone();
-                            save_config(&self.config);
-                            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
-                                self.config.settings.window.width,
-                                600.0,
-                            )));
-                            self.show_settings_window = false;
+                            if let Some(error) =
+                                background_image_size_error(&self.settings_edit.background_image)
+                            {
+                                self.settings_error = Some(error);
+                            } else {
+                                self.config.settings = self.settings_edit.clone();
+                                self.background_texture = load_background_texture(
+                                    ctx,
+                                    &self.config.settings.background_image,
+                                );
+                                save_config(&self.config);
+                                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
+                                    egui::vec2(self.config.settings.window.width, 600.0),
+                                ));
+                                self.show_settings_window = false;
+                            }
                         }
                     });
                 });
+        }
+
+        if !background_drop_handled {
+            let mut changed = false;
+
+            for file in dropped_files {
+                if let Some(path) = file.path {
+                    let path_str = path.to_string_lossy().to_string();
+
+                    if self.config.items.iter().any(|i| i.path == path_str) {
+                        continue;
+                    }
+
+                    let name = generate_name(&path_str);
+
+                    self.config.items.push(LauncherItem {
+                        name,
+                        path: path_str,
+                    });
+
+                    changed = true;
+                }
+            }
+            if changed {
+                save_config(&self.config);
+            }
         }
     }
 }
@@ -766,4 +979,16 @@ fn generate_name(path: &str) -> String {
 
     // EXEなど
     path.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::background_image_dimensions_error;
+
+    #[test]
+    fn background_image_dimensions_must_be_below_2000_pixels() {
+        assert!(background_image_dimensions_error(1999, 1999).is_none());
+        assert!(background_image_dimensions_error(2000, 1999).is_some());
+        assert!(background_image_dimensions_error(1999, 2000).is_some());
+    }
 }
