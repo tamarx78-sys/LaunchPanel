@@ -70,6 +70,8 @@ struct ItemButtonConfig {
     background_color: [u8; 3],
     transparency: u8,
     text_color: [u8; 3],
+    #[serde(default)]
+    bold_text: bool,
 }
 impl Default for WindowConfig {
     fn default() -> Self {
@@ -97,6 +99,7 @@ impl Default for ItemButtonConfig {
             background_color: [60, 60, 60],
             transparency: 0,
             text_color: [180, 180, 180],
+            bold_text: false,
         }
     }
 }
@@ -130,6 +133,126 @@ fn edit_rgb_color(ui: &mut egui::Ui, rgb: &mut [u8; 3]) -> egui::Response {
     }
 
     response
+}
+
+fn shadowed_label(ui: &mut egui::Ui, text: impl Into<String>, small: bool) -> egui::Response {
+    let text = text.into();
+    let text_style = if small {
+        egui::TextStyle::Small
+    } else {
+        egui::TextStyle::Body
+    };
+    let font_id = text_style.resolve(ui.style());
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text, font_id, egui::Color32::PLACEHOLDER);
+    let (rect, response) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
+
+    ui.painter().galley(
+        rect.min + egui::vec2(1.0, 1.0),
+        galley.clone(),
+        egui::Color32::BLACK,
+    );
+    ui.painter().galley(rect.min, galley, egui::Color32::WHITE);
+
+    response
+}
+
+fn paint_hover_highlight(ui: &egui::Ui, rect: egui::Rect, corner_radius: u8) {
+    ui.painter().rect_stroke(
+        rect.expand(1.0),
+        corner_radius,
+        egui::Stroke::new(3.0, egui::Color32::BLACK),
+        egui::StrokeKind::Outside,
+    );
+    ui.painter().rect_stroke(
+        rect,
+        corner_radius,
+        egui::Stroke::new(2.0, egui::Color32::WHITE),
+        egui::StrokeKind::Inside,
+    );
+}
+
+fn rotate_point(point: egui::Vec2, angle: f32) -> egui::Vec2 {
+    let (sin, cos) = angle.sin_cos();
+    egui::vec2(point.x * cos - point.y * sin, point.x * sin + point.y * cos)
+}
+
+fn pin_button(ui: &mut egui::Ui, pinned: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
+    let center = rect.center();
+    let angle = if pinned {
+        0.0
+    } else {
+        -std::f32::consts::FRAC_PI_4
+    };
+    let head_points = [
+        egui::vec2(-5.5, -7.5),
+        egui::vec2(5.5, -7.5),
+        egui::vec2(3.5, -2.0),
+        egui::vec2(-3.5, -2.0),
+    ];
+    let head_points: Vec<egui::Pos2> = head_points
+        .into_iter()
+        .map(|point| center + rotate_point(point, angle))
+        .collect();
+    let shaft_start = center + rotate_point(egui::vec2(0.0, -2.0), angle);
+    let shaft_end = center + rotate_point(egui::vec2(0.0, 8.5), angle);
+
+    if response.hovered() {
+        let shadow_offset = egui::vec2(1.5, 1.5);
+        let shadow_points = head_points
+            .iter()
+            .map(|point| *point + shadow_offset)
+            .collect();
+        ui.painter().add(egui::Shape::convex_polygon(
+            shadow_points,
+            if pinned {
+                egui::Color32::BLACK
+            } else {
+                egui::Color32::TRANSPARENT
+            },
+            egui::Stroke::new(4.0, egui::Color32::BLACK),
+        ));
+        ui.painter().line_segment(
+            [shaft_start + shadow_offset, shaft_end + shadow_offset],
+            egui::Stroke::new(4.0, egui::Color32::BLACK),
+        );
+    }
+
+    ui.painter().add(egui::Shape::convex_polygon(
+        head_points,
+        if pinned {
+            egui::Color32::WHITE
+        } else {
+            egui::Color32::TRANSPARENT
+        },
+        egui::Stroke::new(
+            if response.hovered() { 2.5 } else { 1.5 },
+            if response.hovered() {
+                egui::Color32::WHITE
+            } else {
+                ui.visuals().text_color()
+            },
+        ),
+    ));
+    ui.painter().line_segment(
+        [shaft_start, shaft_end],
+        egui::Stroke::new(
+            if pinned { 2.5 } else { 1.5 },
+            if response.hovered() {
+                egui::Color32::WHITE
+            } else {
+                ui.visuals().text_color()
+            },
+        ),
+    );
+
+    response.on_hover_text(if pinned {
+        "ピン留め解除"
+    } else {
+        "ピン留め"
+    })
 }
 
 fn load_tray_icon() -> Icon {
@@ -310,6 +433,17 @@ fn main() -> eframe::Result {
                 .or_default()
                 .insert(0, "meiryo".to_owned());
 
+            fonts.font_data.insert(
+                "meiryo_bold".to_owned(),
+                std::sync::Arc::new(egui::FontData::from_owned(
+                    std::fs::read("C:/Windows/Fonts/meiryob.ttc").expect("Meiryo Bold 読込失敗"),
+                )),
+            );
+            fonts.families.insert(
+                egui::FontFamily::Name("meiryo_bold".into()),
+                vec!["meiryo_bold".to_owned()],
+            );
+
             cc.egui_ctx.set_fonts(fonts);
 
             let show_requested_for_thread = show_requested.clone();
@@ -473,6 +607,14 @@ impl eframe::App for MyApp {
             .input(|i| i.viewport().inner_rect)
             .map(|rect| rect.width())
             .unwrap_or(self.config.settings.window.width);
+        let window_height = ctx
+            .input(|i| i.viewport().inner_rect)
+            .map(|rect| rect.height())
+            .unwrap_or(600.0);
+
+        let column_width = self.config.settings.window.width;
+        let column_count = (window_width / column_width).floor().max(1.0) as usize;
+        let column_count = column_count.min(self.config.items.len().max(1));
 
         let focused = ctx.input(|i| i.focused);
 
@@ -535,34 +677,39 @@ impl eframe::App for MyApp {
                 egui::vec2(ui.available_width(), ui.spacing().interact_size.y),
                 egui::Layout::right_to_left(egui::Align::Center),
                 |ui| {
-                    if ui.button("+").clicked() {
-                        self.show_add_window = true;
-                    }
-
-                    let pin_label = if self.window_pinned {
-                        "● ピン"
-                    } else {
-                        "○ ピン"
-                    };
-                    if ui.selectable_label(self.window_pinned, pin_label).clicked() {
+                    if pin_button(ui, self.window_pinned).clicked() {
                         self.window_pinned = !self.window_pinned;
                     }
+
+                    if ui
+                        .add_sized([28.0, 28.0], egui::Button::new("⚙"))
+                        .on_hover_text("設定")
+                        .clicked()
+                    {
+                        self.settings_edit = self.config.settings.clone();
+                        self.settings_error = None;
+                        self.show_settings_window = true;
+                    }
+
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        shadowed_label(
+                            ui,
+                            format!("{window_width:.0}×{window_height:.0} {column_count}列"),
+                            true,
+                        );
+                    });
                 },
             );
-
-            let column_width = self.config.settings.window.width;
-
-            let column_count = (window_width / column_width).floor().max(1.0) as usize;
-
-            // アイテム数より列数が多くならないようにする
-            let column_count = column_count.min(self.config.items.len().max(1));
 
             // 1列あたりの行数
             let row_count = self.config.items.len().div_ceil(column_count);
             let item_button_fill = self.config.settings.item_button.fill_color();
             let item_button_text_color = self.config.settings.item_button.text_color();
 
-            ui.columns(column_count, |columns| {
+            let mut item_list_frame = egui::Frame::NONE
+                .inner_margin(egui::Margin::symmetric(10, 0))
+                .begin(ui);
+            item_list_frame.content_ui.columns(column_count, |columns| {
                 for (column_index, column_ui) in columns.iter_mut().enumerate() {
                     for row_index in 0..row_count {
                         // 縦方向に並べてから、次の列へ移る
@@ -578,14 +725,21 @@ impl eframe::App for MyApp {
                             .unwrap_or(&self.fallback_icon);
                         let image =
                             egui::Image::new(texture).fit_to_exact_size(egui::vec2(20.0, 20.0));
-                        let text =
+                        let mut text =
                             egui::RichText::new(item.name.as_str()).color(item_button_text_color);
+                        if self.config.settings.item_button.bold_text {
+                            text = text.family(egui::FontFamily::Name("meiryo_bold".into()));
+                        }
 
                         let response = column_ui.add_sized(
                             [column_ui.available_width(), 36.0],
                             egui::Button::new((image, text, egui::Atom::grow()))
                                 .fill(item_button_fill),
                         );
+
+                        if response.hovered() {
+                            paint_hover_highlight(column_ui, response.rect, 4);
+                        }
 
                         if response.clicked() {
                             let _ = open::that(&item.path);
@@ -625,16 +779,12 @@ impl eframe::App for MyApp {
                     }
                 }
             });
-            // 一時的に表示
-            ui.label(format!(
-                "Width: {:.0}  Columns: {}",
-                window_width, column_count
-            ));
+            item_list_frame.end(ui);
             // ドラッグ＆ドロップの説明
             ui.add_space(10.0);
             ui.separator();
 
-            ui.small("ドラッグ＆ドロップで追加できます");
+            shadowed_label(ui, "ドラッグ＆ドロップで追加できます", true);
 
             if let Some(index) = move_up
                 && index > 0
@@ -746,130 +896,177 @@ impl eframe::App for MyApp {
         if self.show_settings_window {
             egui::Window::new("設定")
                 .collapsible(false)
-                .resizable(false)
-                .default_size(egui::vec2(280.0, 120.0))
+                .resizable(true)
+                .default_size(egui::vec2(200.0, 360.0))
                 .show(ctx, |ui| {
-                    ui.heading("ウィンドウ");
-                    egui::Grid::new("settings_window_grid")
-                        .num_columns(2)
-                        .spacing([16.0, 8.0])
+                    ui.set_min_width(176.0);
+                    ui.set_max_width(176.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(420.0)
                         .show(ui, |ui| {
-                            ui.label("1列の幅 (px)");
+                            egui::CollapsingHeader::new("ウィンドウ")
+                                .default_open(true)
+                                .show(ui, |ui| {
+                                    egui::Grid::new("settings_window_grid")
+                                        .num_columns(2)
+                                        .spacing([8.0, 8.0])
+                                        .show(ui, |ui| {
+                                            ui.label("1列の幅 (px)");
+                                            ui.add(
+                                                egui::DragValue::new(
+                                                    &mut self.settings_edit.window.width,
+                                                )
+                                                .range(MIN_WINDOW_WIDTH..=MAX_WINDOW_WIDTH)
+                                                .speed(1.0),
+                                            );
+                                            ui.end_row();
+                                        });
+                                });
 
-                            ui.add(
-                                egui::DragValue::new(&mut self.settings_edit.window.width)
-                                    .range(MIN_WINDOW_WIDTH..=MAX_WINDOW_WIDTH)
-                                    .speed(1.0),
-                            );
+                            egui::CollapsingHeader::new("背景")
+                                .default_open(false)
+                                .show(ui, |ui| {
+                                    ui.label("画像パス");
+                                    let background_path = ui.text_edit_singleline(
+                                        &mut self.settings_edit.background_image,
+                                    );
+                                    if background_path.changed() {
+                                        self.settings_error = None;
+                                    }
+                                    ui.small("画像ファイルをこの欄へドラッグ＆ドロップできます");
+                                    if hovered_files {
+                                        background_path.highlight();
+                                    }
 
-                            ui.end_row();
+                                    if let Some(path) =
+                                        dropped_files.iter().find_map(|file| file.path.as_ref())
+                                    {
+                                        background_drop_handled = true;
+                                        let path = path.to_string_lossy().to_string();
+                                        if let Some(error) = background_image_size_error(&path) {
+                                            self.settings_error = Some(error);
+                                        } else {
+                                            self.settings_edit.background_image = path;
+                                            self.settings_error = None;
+                                        }
+                                    }
+                                });
+
+                            egui::CollapsingHeader::new("ボタン")
+                                .default_open(false)
+                                .show(ui, |ui| {
+                                    egui::Grid::new("settings_item_button_grid")
+                                        .num_columns(2)
+                                        .spacing([8.0, 8.0])
+                                        .show(ui, |ui| {
+                                            ui.label("背景色");
+                                            edit_rgb_color(
+                                                ui,
+                                                &mut self
+                                                    .settings_edit
+                                                    .item_button
+                                                    .background_color,
+                                            );
+                                            ui.end_row();
+
+                                            ui.label("透過率");
+                                            ui.add(
+                                                egui::DragValue::new(
+                                                    &mut self
+                                                        .settings_edit
+                                                        .item_button
+                                                        .transparency,
+                                                )
+                                                .range(0..=100)
+                                                .suffix("%"),
+                                            );
+                                            ui.end_row();
+
+                                            ui.label("テキスト色");
+                                            edit_rgb_color(
+                                                ui,
+                                                &mut self.settings_edit.item_button.text_color,
+                                            );
+                                            ui.end_row();
+
+                                            ui.label("文字");
+                                            ui.checkbox(
+                                                &mut self.settings_edit.item_button.bold_text,
+                                                "太字にする",
+                                            );
+                                            ui.end_row();
+                                        });
+
+                                    if ui.button("デフォルトに戻す").clicked() {
+                                        self.settings_edit.item_button =
+                                            ItemButtonConfig::default();
+                                    }
+
+                                    let preview_fill = self.settings_edit.item_button.fill_color();
+                                    let preview_text_color =
+                                        self.settings_edit.item_button.text_color();
+                                    let mut preview_text =
+                                        egui::RichText::new("プレビュー").color(preview_text_color);
+                                    if self.settings_edit.item_button.bold_text {
+                                        preview_text = preview_text
+                                            .family(egui::FontFamily::Name("meiryo_bold".into()));
+                                    }
+                                    let response = ui.add_sized(
+                                        [ui.available_width(), 36.0],
+                                        egui::Button::new(preview_text).fill(preview_fill),
+                                    );
+                                    if response.hovered() {
+                                        paint_hover_highlight(ui, response.rect, 4);
+                                    }
+                                });
+
+                            egui::CollapsingHeader::new("ホットキー")
+                                .default_open(false)
+                                .show(ui, |ui| {
+                                    egui::Grid::new("settings_hotkey_grid")
+                                        .num_columns(2)
+                                        .spacing([8.0, 8.0])
+                                        .show(ui, |ui| {
+                                            ui.checkbox(
+                                                &mut self.settings_edit.hotkey.ctrl,
+                                                "Ctrl",
+                                            );
+                                            ui.end_row();
+                                            ui.checkbox(&mut self.settings_edit.hotkey.alt, "Alt");
+                                            ui.end_row();
+                                            ui.checkbox(
+                                                &mut self.settings_edit.hotkey.shift,
+                                                "Shift",
+                                            );
+                                            ui.end_row();
+                                            ui.add_enabled(
+                                                false,
+                                                egui::Checkbox::new(
+                                                    &mut self.settings_edit.hotkey.win,
+                                                    "Win",
+                                                ),
+                                            );
+                                            ui.end_row();
+                                            ui.label("キー");
+                                            egui::ComboBox::from_id_salt("hotkey_key")
+                                                .selected_text(&self.settings_edit.hotkey.key)
+                                                .show_ui(ui, |ui| {
+                                                    for c in 'A'..='Z' {
+                                                        let s = c.to_string();
+                                                        ui.selectable_value(
+                                                            &mut self.settings_edit.hotkey.key,
+                                                            s.clone(),
+                                                            s,
+                                                        );
+                                                    }
+                                                });
+                                        });
+                                });
                         });
-                    ui.separator();
-                    ui.heading("背景");
-                    ui.label("画像パス");
-                    let background_path =
-                        ui.text_edit_singleline(&mut self.settings_edit.background_image);
-                    if background_path.changed() {
-                        self.settings_error = None;
-                    }
-                    ui.small("画像ファイルをこの欄へドラッグ＆ドロップできます");
-                    if hovered_files {
-                        background_path.highlight();
-                    }
-
-                    if let Some(path) = dropped_files.iter().find_map(|file| file.path.as_ref()) {
-                        background_drop_handled = true;
-                        let path = path.to_string_lossy().to_string();
-
-                        if let Some(error) = background_image_size_error(&path) {
-                            self.settings_error = Some(error);
-                        } else {
-                            self.settings_edit.background_image = path;
-                            self.settings_error = None;
-                        }
-                    }
 
                     if let Some(error) = &self.settings_error {
                         ui.colored_label(egui::Color32::RED, error);
                     }
-
-                    ui.separator();
-                    ui.heading("アイテムボタン");
-                    egui::Grid::new("settings_item_button_grid")
-                        .num_columns(2)
-                        .spacing([16.0, 8.0])
-                        .show(ui, |ui| {
-                            ui.label("背景色");
-                            edit_rgb_color(
-                                ui,
-                                &mut self.settings_edit.item_button.background_color,
-                            );
-                            ui.end_row();
-
-                            ui.label("透過率");
-                            ui.add(
-                                egui::Slider::new(
-                                    &mut self.settings_edit.item_button.transparency,
-                                    0..=100,
-                                )
-                                .suffix("%"),
-                            );
-                            ui.end_row();
-
-                            ui.label("テキスト色");
-                            edit_rgb_color(ui, &mut self.settings_edit.item_button.text_color);
-                            ui.end_row();
-                        });
-
-                    if ui.button("デフォルトに戻す").clicked() {
-                        self.settings_edit.item_button = ItemButtonConfig::default();
-                    }
-
-                    let preview_fill = self.settings_edit.item_button.fill_color();
-                    let preview_text_color = self.settings_edit.item_button.text_color();
-                    ui.add_sized(
-                        [ui.available_width(), 36.0],
-                        egui::Button::new(
-                            egui::RichText::new("アイテムボタンのプレビュー")
-                                .color(preview_text_color),
-                        )
-                        .fill(preview_fill),
-                    );
-
-                    ui.separator();
-                    ui.heading("ホットキー");
-                    egui::Grid::new("settings_hotkey_grid")
-                        .num_columns(2)
-                        .spacing([16.0, 8.0])
-                        .show(ui, |ui| {
-                            ui.checkbox(&mut self.settings_edit.hotkey.ctrl, "Ctrl");
-                            ui.end_row();
-
-                            ui.checkbox(&mut self.settings_edit.hotkey.alt, "Alt");
-                            ui.end_row();
-
-                            ui.checkbox(&mut self.settings_edit.hotkey.shift, "Shift");
-                            ui.end_row();
-
-                            ui.add_enabled(
-                                false,
-                                egui::Checkbox::new(&mut self.settings_edit.hotkey.win, "Win"),
-                            );
-                            ui.end_row();
-                            ui.label("キー");
-                            egui::ComboBox::from_id_salt("hotkey_key")
-                                .selected_text(&self.settings_edit.hotkey.key)
-                                .show_ui(ui, |ui| {
-                                    for c in 'A'..='Z' {
-                                        let s = c.to_string();
-                                        ui.selectable_value(
-                                            &mut self.settings_edit.hotkey.key,
-                                            s.clone(),
-                                            s,
-                                        );
-                                    }
-                                });
-                        });
 
                     ui.separator();
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -983,12 +1180,37 @@ fn generate_name(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::background_image_dimensions_error;
+    use super::{Config, background_image_dimensions_error};
 
     #[test]
     fn background_image_dimensions_must_be_below_2000_pixels() {
         assert!(background_image_dimensions_error(1999, 1999).is_none());
         assert!(background_image_dimensions_error(2000, 1999).is_some());
         assert!(background_image_dimensions_error(1999, 2000).is_some());
+    }
+
+    #[test]
+    fn old_item_button_settings_default_to_regular_text() {
+        let json = r#"{
+            "settings": {
+                "window": { "width": 280.0 },
+                "hotkey": {
+                    "ctrl": true,
+                    "alt": true,
+                    "shift": true,
+                    "win": false,
+                    "key": "M"
+                },
+                "item_button": {
+                    "background_color": [60, 60, 60],
+                    "transparency": 20,
+                    "text_color": [180, 180, 180]
+                }
+            },
+            "items": []
+        }"#;
+
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(!config.settings.item_button.bold_text);
     }
 }

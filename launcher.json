@@ -9,6 +9,21 @@
       "shift": true,
       "win": false,
       "key": "M"
+    },
+    "background_image": "C:\\Users\\tama-\\Pictures\\00096-412142981.jpg",
+    "item_button": {
+      "background_color": [
+        60,
+        60,
+        60
+      ],
+      "transparency": 30,
+      "text_color": [
+        180,
+        180,
+        180
+      ],
+      "bold_text": true
     }
   },
   "items": [
