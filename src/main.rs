@@ -119,6 +119,19 @@ impl ItemButtonConfig {
     }
 }
 
+fn resized_window_width(
+    current_window_width: f32,
+    current_column_count: usize,
+    old_column_width: f32,
+    new_column_width: f32,
+) -> Option<f32> {
+    if old_column_width == new_column_width {
+        return None;
+    }
+
+    Some(current_window_width + (new_column_width - old_column_width) * current_column_count as f32)
+}
+
 fn edit_rgb_color(ui: &mut egui::Ui, rgb: &mut [u8; 3]) -> egui::Response {
     let mut color = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
     let response = egui::color_picker::color_edit_button_srgba(
@@ -1079,15 +1092,23 @@ impl eframe::App for MyApp {
                             {
                                 self.settings_error = Some(error);
                             } else {
+                                let resized_width = resized_window_width(
+                                    window_width,
+                                    column_count,
+                                    self.config.settings.window.width,
+                                    self.settings_edit.window.width,
+                                );
                                 self.config.settings = self.settings_edit.clone();
                                 self.background_texture = load_background_texture(
                                     ctx,
                                     &self.config.settings.background_image,
                                 );
                                 save_config(&self.config);
-                                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
-                                    egui::vec2(self.config.settings.window.width, 600.0),
-                                ));
+                                if let Some(resized_width) = resized_width {
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
+                                        egui::vec2(resized_width, window_height),
+                                    ));
+                                }
                                 self.show_settings_window = false;
                             }
                         }
@@ -1180,7 +1201,7 @@ fn generate_name(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, background_image_dimensions_error};
+    use super::{Config, background_image_dimensions_error, resized_window_width};
 
     #[test]
     fn background_image_dimensions_must_be_below_2000_pixels() {
@@ -1212,5 +1233,15 @@ mod tests {
 
         let config: Config = serde_json::from_str(json).unwrap();
         assert!(!config.settings.item_button.bold_text);
+    }
+
+    #[test]
+    fn unchanged_column_width_preserves_exact_window_size() {
+        assert_eq!(resized_window_width(400.0, 2, 200.0, 200.0), None);
+    }
+
+    #[test]
+    fn changed_column_width_preserves_column_count_and_existing_overhead() {
+        assert_eq!(resized_window_width(421.0, 2, 200.0, 300.0), Some(621.0));
     }
 }
