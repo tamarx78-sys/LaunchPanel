@@ -177,13 +177,13 @@ fn paint_hover_highlight(ui: &egui::Ui, rect: egui::Rect, corner_radius: u8) {
     ui.painter().rect_stroke(
         rect.expand(1.0),
         corner_radius,
-        egui::Stroke::new(3.0, egui::Color32::BLACK),
+        egui::Stroke::new(3.0_f32, egui::Color32::BLACK),
         egui::StrokeKind::Outside,
     );
     ui.painter().rect_stroke(
         rect,
         corner_radius,
-        egui::Stroke::new(2.0, egui::Color32::WHITE),
+        egui::Stroke::new(2.0_f32, egui::Color32::WHITE),
         egui::StrokeKind::Inside,
     );
 }
@@ -227,11 +227,11 @@ fn pin_button(ui: &mut egui::Ui, pinned: bool) -> egui::Response {
             } else {
                 egui::Color32::TRANSPARENT
             },
-            egui::Stroke::new(4.0, egui::Color32::BLACK),
+            egui::Stroke::new(4.0_f32, egui::Color32::BLACK),
         ));
         ui.painter().line_segment(
             [shaft_start + shadow_offset, shaft_end + shadow_offset],
-            egui::Stroke::new(4.0, egui::Color32::BLACK),
+            egui::Stroke::new(4.0_f32, egui::Color32::BLACK),
         );
     }
 
@@ -243,7 +243,7 @@ fn pin_button(ui: &mut egui::Ui, pinned: bool) -> egui::Response {
             egui::Color32::TRANSPARENT
         },
         egui::Stroke::new(
-            if response.hovered() { 2.5 } else { 1.5 },
+            if response.hovered() { 2.5_f32 } else { 1.5_f32 },
             if response.hovered() {
                 egui::Color32::WHITE
             } else {
@@ -254,7 +254,7 @@ fn pin_button(ui: &mut egui::Ui, pinned: bool) -> egui::Response {
     ui.painter().line_segment(
         [shaft_start, shaft_end],
         egui::Stroke::new(
-            if pinned { 2.5 } else { 1.5 },
+            if pinned { 2.5_f32 } else { 1.5_f32 },
             if response.hovered() {
                 egui::Color32::WHITE
             } else {
