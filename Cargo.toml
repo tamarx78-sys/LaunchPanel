@@ -7,6 +7,7 @@ rust-version = "1.85"
 description = "A lightweight, customizable launcher panel for Windows"
 license = "MIT"
 readme = "README.md"
+repository = "https://github.com/tamarx78-sys/LaunchPanel"
 keywords = ["launcher", "windows", "desktop", "egui"]
 categories = ["gui"]
 
