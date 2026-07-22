@@ -1,3 +1,10 @@
-/target
+/target/
 /LaunchPanel.json
 /launcher.json
+*.pdb
+*.exe
+*.msi
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
