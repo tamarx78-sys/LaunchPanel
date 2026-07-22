@@ -196,7 +196,7 @@ fn rotate_point(point: egui::Vec2, angle: f32) -> egui::Vec2 {
 fn pin_button(ui: &mut egui::Ui, pinned: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
     let center = rect.center();
-    let angle = if pinned {
+    let angle: f32 = if pinned {
         0.0
     } else {
         -std::f32::consts::FRAC_PI_4
