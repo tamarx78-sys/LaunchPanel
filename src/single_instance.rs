@@ -7,14 +7,14 @@ use windows::Win32::System::Threading::{
 use windows::core::HSTRING;
 
 #[cfg(debug_assertions)]
-const MUTEX_NAME: &str = "Local\\MiniLauncher_Debug_Mutex";
+const MUTEX_NAME: &str = "Local\\LaunchPanel_Debug_Mutex";
 #[cfg(debug_assertions)]
-const SHOW_EVENT_NAME: &str = "Local\\MiniLauncher_Debug_Show";
+const SHOW_EVENT_NAME: &str = "Local\\LaunchPanel_Debug_Show";
 
 #[cfg(not(debug_assertions))]
-const MUTEX_NAME: &str = "Local\\MiniLauncher_Mutex";
+const MUTEX_NAME: &str = "Local\\LaunchPanel_Mutex";
 #[cfg(not(debug_assertions))]
-const SHOW_EVENT_NAME: &str = "Local\\MiniLauncher_Show";
+const SHOW_EVENT_NAME: &str = "Local\\LaunchPanel_Show";
 
 pub enum Acquisition {
     Primary(SingleInstance),

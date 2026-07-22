@@ -23,12 +23,14 @@ const DEFAULT_WINDOW_WIDTH: f32 = 280.0;
 const MIN_WINDOW_WIDTH: f32 = 200.0;
 const MAX_WINDOW_WIDTH: f32 = 600.0;
 const MAX_BACKGROUND_IMAGE_DIMENSION: u32 = 2000;
+const CONFIG_PATH: &str = "LaunchPanel.json";
+const LEGACY_CONFIG_PATH: &str = "launcher.json";
 
 #[cfg(debug_assertions)]
-const WINDOW_TITLE: &str = "MiniLauncher [DEBUG]";
+const WINDOW_TITLE: &str = "LaunchPanel [DEBUG]";
 
 #[cfg(not(debug_assertions))]
-const WINDOW_TITLE: &str = "MiniLauncher";
+const WINDOW_TITLE: &str = "LaunchPanel";
 
 #[derive(Serialize, Deserialize, Clone)]
 struct LauncherItem {
@@ -269,7 +271,7 @@ fn pin_button(ui: &mut egui::Ui, pinned: bool) -> egui::Response {
 }
 
 fn load_tray_icon() -> Icon {
-    let png_bytes = include_bytes!("../appicon.png");
+    let png_bytes = include_bytes!("../LaunchPanel.png");
 
     let image = image::load_from_memory(png_bytes)
         .expect("PNG読込失敗")
@@ -281,7 +283,7 @@ fn load_tray_icon() -> Icon {
 }
 
 fn load_fallback_texture(ctx: &egui::Context) -> egui::TextureHandle {
-    let image = image::load_from_memory(include_bytes!("../appicon.png"))
+    let image = image::load_from_memory(include_bytes!("../LaunchPanel.png"))
         .expect("フォールバックアイコン読込失敗")
         .into_rgba8();
     let size = [image.width() as usize, image.height() as usize];
@@ -388,7 +390,7 @@ fn main() -> eframe::Result {
     let settings_requested_for_thread = settings_requested.clone();
 
     fn load_window_icon() -> egui::IconData {
-        let png_bytes = include_bytes!("../appicon.png");
+        let png_bytes = include_bytes!("../LaunchPanel.png");
 
         let image = image::load_from_memory(png_bytes)
             .expect("PNG読込失敗")
@@ -404,7 +406,7 @@ fn main() -> eframe::Result {
     }
 
     let _tray_icon = TrayIconBuilder::new()
-        .with_tooltip("MiniLauncher")
+        .with_tooltip("LaunchPanel")
         .with_icon(load_tray_icon())
         .with_menu(Box::new(tray_menu))
         .build()
@@ -1144,18 +1146,24 @@ impl eframe::App for MyApp {
     }
 }
 fn load_config() -> Config {
-    let path = "launcher.json";
-
-    if !std::path::Path::new(path).exists() {
+    let path = if Path::new(CONFIG_PATH).exists() {
+        CONFIG_PATH
+    } else if Path::new(LEGACY_CONFIG_PATH).exists() {
+        LEGACY_CONFIG_PATH
+    } else {
         let config = Config::default();
         save_config(&config);
         return config;
-    }
+    };
+    let migrating_legacy_config = path == LEGACY_CONFIG_PATH;
 
-    let json = fs::read_to_string(path).expect("launcher.json 読込失敗");
+    let json = fs::read_to_string(path).unwrap_or_else(|error| panic!("{path} 読込失敗: {error}"));
 
     // 新フォーマット
     if let Ok(config) = serde_json::from_str::<Config>(&json) {
+        if migrating_legacy_config {
+            save_config(&config);
+        }
         return config;
     }
 
@@ -1176,7 +1184,8 @@ fn load_config() -> Config {
 fn save_config(config: &Config) {
     let json = serde_json::to_string_pretty(config).expect("JSON変換失敗");
 
-    std::fs::write("launcher.json", json).expect("保存失敗");
+    std::fs::write(CONFIG_PATH, json)
+        .unwrap_or_else(|error| panic!("{CONFIG_PATH} 保存失敗: {error}"));
 }
 fn generate_name(path: &str) -> String {
     // URL
