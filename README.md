@@ -1,5 +1,7 @@
 # LaunchPanel
 
+[English](README.en.md) | 日本語
+
 LaunchPanelは、よく使うアプリ、ファイル、フォルダー、Webサイトを素早く開くためのWindows用ランチャーです。
 
 ![縦長レイアウトのLaunchPanel](Screenshot1.png)
