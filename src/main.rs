@@ -146,6 +146,10 @@ fn window_column_count(window_width: f32, column_width: f32, item_count: usize) 
     column_count.max(1).min(item_count.max(1))
 }
 
+fn row_major_item_index(column_index: usize, row_index: usize, column_count: usize) -> usize {
+    row_index * column_count + column_index
+}
+
 fn foreground_window_is_moving_or_resizing() -> bool {
     let mut info = GUITHREADINFO {
         cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
@@ -789,8 +793,8 @@ impl eframe::App for MyApp {
             item_list_frame.content_ui.columns(column_count, |columns| {
                 for (column_index, column_ui) in columns.iter_mut().enumerate() {
                     for row_index in 0..row_count {
-                        // 縦方向に並べてから、次の列へ移る
-                        let index = column_index * row_count + row_index;
+                        // 横方向に列を埋めてから、次の行へ移る
+                        let index = row_major_item_index(column_index, row_index, column_count);
 
                         let Some(item) = self.config.items.get(index) else {
                             continue;
@@ -1274,8 +1278,8 @@ fn generate_name(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Config, background_image_dimensions_error, resized_window_width, snapped_window_width,
-        window_column_count,
+        Config, background_image_dimensions_error, resized_window_width, row_major_item_index,
+        snapped_window_width, window_column_count,
     };
 
     #[test]
@@ -1340,5 +1344,13 @@ mod tests {
     #[test]
     fn column_count_does_not_cross_a_real_width_boundary_early() {
         assert_eq!(window_column_count(599.0, 200.0, 4), 2);
+    }
+
+    #[test]
+    fn four_items_in_three_columns_fill_the_first_row_before_the_second() {
+        assert_eq!(row_major_item_index(0, 0, 3), 0);
+        assert_eq!(row_major_item_index(1, 0, 3), 1);
+        assert_eq!(row_major_item_index(2, 0, 3), 2);
+        assert_eq!(row_major_item_index(0, 1, 3), 3);
     }
 }
