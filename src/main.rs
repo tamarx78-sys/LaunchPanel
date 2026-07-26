@@ -18,6 +18,7 @@ use tray_icon::{
     Icon, TrayIconBuilder,
     menu::{Menu, MenuItem},
 };
+use windows::Win32::UI::WindowsAndMessaging::{GUI_INMOVESIZE, GUITHREADINFO, GetGUIThreadInfo};
 
 const DEFAULT_WINDOW_WIDTH: f32 = 280.0;
 const MIN_WINDOW_WIDTH: f32 = 200.0;
@@ -132,6 +133,50 @@ fn resized_window_width(
     }
 
     Some(current_window_width + (new_column_width - old_column_width) * current_column_count as f32)
+}
+
+fn snapped_window_width(column_width: f32, column_count: usize) -> f32 {
+    column_width * column_count.max(1) as f32
+}
+
+fn window_column_count(window_width: f32, column_width: f32, item_count: usize) -> usize {
+    const WIDTH_BOUNDARY_TOLERANCE: f32 = 0.5;
+
+    let column_count = ((window_width + WIDTH_BOUNDARY_TOLERANCE) / column_width).floor() as usize;
+    column_count.max(1).min(item_count.max(1))
+}
+
+fn column_major_item_index(
+    column_index: usize,
+    row_index: usize,
+    column_count: usize,
+    item_count: usize,
+) -> Option<usize> {
+    if column_count == 0 || column_index >= column_count {
+        return None;
+    }
+
+    let items_per_column = item_count / column_count;
+    let columns_with_extra_item = item_count % column_count;
+    let column_height = items_per_column + usize::from(column_index < columns_with_extra_item);
+
+    if row_index >= column_height {
+        return None;
+    }
+
+    let preceding_items =
+        column_index * items_per_column + column_index.min(columns_with_extra_item);
+    Some(preceding_items + row_index)
+}
+
+fn foreground_window_is_moving_or_resizing() -> bool {
+    let mut info = GUITHREADINFO {
+        cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+        ..Default::default()
+    };
+
+    // SAFETY: `info` points to a valid writable GUITHREADINFO whose cbSize is initialized.
+    unsafe { GetGUIThreadInfo(0, &mut info).is_ok() && info.flags.contains(GUI_INMOVESIZE) }
 }
 
 fn edit_rgb_color(ui: &mut egui::Ui, rgb: &mut [u8; 3]) -> egui::Response {
@@ -548,6 +593,10 @@ fn main() -> eframe::Result {
                 show_settings_window: false,
                 settings_edit: config.settings.clone(),
                 settings_error: None,
+
+                last_observed_window_width: None,
+                user_resize_active: false,
+                programmatic_resize_target: None,
             }))
         }),
     )
@@ -587,6 +636,10 @@ struct MyApp {
     settings_error: Option<String>,
 
     suppress_auto_hide_until_focused: bool,
+
+    last_observed_window_width: Option<f32>,
+    user_resize_active: bool,
+    programmatic_resize_target: Option<f32>,
 }
 
 impl MyApp {
@@ -628,8 +681,7 @@ impl eframe::App for MyApp {
             .unwrap_or(600.0);
 
         let column_width = self.config.settings.window.width;
-        let column_count = (window_width / column_width).floor().max(1.0) as usize;
-        let column_count = column_count.min(self.config.items.len().max(1));
+        let column_count = window_column_count(window_width, column_width, self.config.items.len());
 
         let focused = ctx.input(|i| i.focused);
 
@@ -643,6 +695,39 @@ impl eframe::App for MyApp {
             || self.show_edit_window
             || self.show_settings_window
             || self.show_delete_window;
+
+        let width_changed = self
+            .last_observed_window_width
+            .is_some_and(|previous| (window_width - previous).abs() > 0.5);
+        let native_resize_active = foreground_window_is_moving_or_resizing();
+
+        if let Some(target) = self.programmatic_resize_target {
+            if width_changed || (window_width - target).abs() <= 0.5 {
+                self.programmatic_resize_target = None;
+            }
+        } else if width_changed && native_resize_active && !dialog_open {
+            self.user_resize_active = true;
+        }
+
+        if dialog_open {
+            self.user_resize_active = false;
+        } else if self.user_resize_active {
+            if native_resize_active {
+                ctx.request_repaint();
+            } else {
+                let target_width =
+                    snapped_window_width(self.config.settings.window.width, column_count);
+                if (window_width - target_width).abs() > 0.5 {
+                    self.programmatic_resize_target = Some(target_width);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+                        target_width,
+                        window_height,
+                    )));
+                }
+                self.user_resize_active = false;
+            }
+        }
+        self.last_observed_window_width = Some(window_width);
 
         let auto_hide_requested = !focused
             && !dialog_open
@@ -727,8 +812,15 @@ impl eframe::App for MyApp {
             item_list_frame.content_ui.columns(column_count, |columns| {
                 for (column_index, column_ui) in columns.iter_mut().enumerate() {
                     for row_index in 0..row_count {
-                        // 縦方向に並べてから、次の列へ移る
-                        let index = column_index * row_count + row_index;
+                        // 列の外形を先に決め、JSONの順番で左列から縦に埋める
+                        let Some(index) = column_major_item_index(
+                            column_index,
+                            row_index,
+                            column_count,
+                            self.config.items.len(),
+                        ) else {
+                            continue;
+                        };
 
                         let Some(item) = self.config.items.get(index) else {
                             continue;
@@ -1107,6 +1199,7 @@ impl eframe::App for MyApp {
                                 );
                                 save_config(&self.config);
                                 if let Some(resized_width) = resized_width {
+                                    self.programmatic_resize_target = Some(resized_width);
                                     ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
                                         egui::vec2(resized_width, window_height),
                                     ));
@@ -1210,7 +1303,10 @@ fn generate_name(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, background_image_dimensions_error, resized_window_width};
+    use super::{
+        Config, background_image_dimensions_error, column_major_item_index, resized_window_width,
+        snapped_window_width, window_column_count,
+    };
 
     #[test]
     fn background_image_dimensions_must_be_below_2000_pixels() {
@@ -1252,5 +1348,54 @@ mod tests {
     #[test]
     fn changed_column_width_preserves_column_count_and_existing_overhead() {
         assert_eq!(resized_window_width(421.0, 2, 200.0, 300.0), Some(621.0));
+    }
+
+    #[test]
+    fn snapped_width_is_an_exact_multiple_of_the_column_width() {
+        assert_eq!(snapped_window_width(200.0, 2), 400.0);
+        assert_eq!(snapped_window_width(180.0, 3), 540.0);
+    }
+
+    #[test]
+    fn snapped_width_always_keeps_at_least_one_column() {
+        assert_eq!(snapped_window_width(200.0, 0), 200.0);
+    }
+
+    #[test]
+    fn column_count_tolerates_subpixel_rounding_at_width_boundary() {
+        assert_eq!(window_column_count(599.75, 200.0, 4), 3);
+        assert_eq!(window_column_count(799.75, 200.0, 4), 4);
+    }
+
+    #[test]
+    fn column_count_does_not_cross_a_real_width_boundary_early() {
+        assert_eq!(window_column_count(599.0, 200.0, 4), 2);
+    }
+
+    #[test]
+    fn four_items_in_three_columns_fill_down_each_column_in_json_order() {
+        assert_eq!(column_major_item_index(0, 0, 3, 4), Some(0));
+        assert_eq!(column_major_item_index(0, 1, 3, 4), Some(1));
+        assert_eq!(column_major_item_index(1, 0, 3, 4), Some(2));
+        assert_eq!(column_major_item_index(2, 0, 3, 4), Some(3));
+        assert_eq!(column_major_item_index(1, 1, 3, 4), None);
+    }
+
+    #[test]
+    fn five_items_in_three_columns_distribute_extra_items_to_left_columns() {
+        assert_eq!(column_major_item_index(0, 0, 3, 5), Some(0));
+        assert_eq!(column_major_item_index(0, 1, 3, 5), Some(1));
+        assert_eq!(column_major_item_index(1, 0, 3, 5), Some(2));
+        assert_eq!(column_major_item_index(1, 1, 3, 5), Some(3));
+        assert_eq!(column_major_item_index(2, 0, 3, 5), Some(4));
+        assert_eq!(column_major_item_index(2, 1, 3, 5), None);
+    }
+
+    #[test]
+    fn evenly_divisible_items_fill_every_column_to_the_same_height() {
+        assert_eq!(column_major_item_index(0, 0, 2, 4), Some(0));
+        assert_eq!(column_major_item_index(0, 1, 2, 4), Some(1));
+        assert_eq!(column_major_item_index(1, 0, 2, 4), Some(2));
+        assert_eq!(column_major_item_index(1, 1, 2, 4), Some(3));
     }
 }
