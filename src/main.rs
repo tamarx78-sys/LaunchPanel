@@ -18,7 +18,7 @@ use tray_icon::{
     Icon, TrayIconBuilder,
     menu::{Menu, MenuItem},
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+use windows::Win32::UI::WindowsAndMessaging::{GUI_INMOVESIZE, GUITHREADINFO, GetGUIThreadInfo};
 
 const DEFAULT_WINDOW_WIDTH: f32 = 280.0;
 const MIN_WINDOW_WIDTH: f32 = 200.0;
@@ -139,9 +139,14 @@ fn snapped_window_width(column_width: f32, column_count: usize) -> f32 {
     column_width * column_count.max(1) as f32
 }
 
-fn primary_mouse_button_down() -> bool {
-    // SAFETY: GetAsyncKeyState only reads the current state of the supplied virtual key.
-    unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0 }
+fn foreground_window_is_moving_or_resizing() -> bool {
+    let mut info = GUITHREADINFO {
+        cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+        ..Default::default()
+    };
+
+    // SAFETY: `info` points to a valid writable GUITHREADINFO whose cbSize is initialized.
+    unsafe { GetGUIThreadInfo(0, &mut info).is_ok() && info.flags.contains(GUI_INMOVESIZE) }
 }
 
 fn edit_rgb_color(ui: &mut egui::Ui, rgb: &mut [u8; 3]) -> egui::Response {
@@ -665,20 +670,20 @@ impl eframe::App for MyApp {
         let width_changed = self
             .last_observed_window_width
             .is_some_and(|previous| (window_width - previous).abs() > 0.5);
-        let primary_mouse_button_down = primary_mouse_button_down();
+        let native_resize_active = foreground_window_is_moving_or_resizing();
 
         if let Some(target) = self.programmatic_resize_target {
             if width_changed || (window_width - target).abs() <= 0.5 {
                 self.programmatic_resize_target = None;
             }
-        } else if width_changed && primary_mouse_button_down && !dialog_open {
+        } else if width_changed && native_resize_active && !dialog_open {
             self.user_resize_active = true;
         }
 
         if dialog_open {
             self.user_resize_active = false;
         } else if self.user_resize_active {
-            if primary_mouse_button_down {
+            if native_resize_active {
                 ctx.request_repaint();
             } else {
                 let target_width =
