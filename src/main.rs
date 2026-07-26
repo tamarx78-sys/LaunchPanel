@@ -146,8 +146,27 @@ fn window_column_count(window_width: f32, column_width: f32, item_count: usize) 
     column_count.max(1).min(item_count.max(1))
 }
 
-fn row_major_item_index(column_index: usize, row_index: usize, column_count: usize) -> usize {
-    row_index * column_count + column_index
+fn column_major_item_index(
+    column_index: usize,
+    row_index: usize,
+    column_count: usize,
+    item_count: usize,
+) -> Option<usize> {
+    if column_count == 0 || column_index >= column_count {
+        return None;
+    }
+
+    let items_per_column = item_count / column_count;
+    let columns_with_extra_item = item_count % column_count;
+    let column_height = items_per_column + usize::from(column_index < columns_with_extra_item);
+
+    if row_index >= column_height {
+        return None;
+    }
+
+    let preceding_items =
+        column_index * items_per_column + column_index.min(columns_with_extra_item);
+    Some(preceding_items + row_index)
 }
 
 fn foreground_window_is_moving_or_resizing() -> bool {
@@ -793,8 +812,15 @@ impl eframe::App for MyApp {
             item_list_frame.content_ui.columns(column_count, |columns| {
                 for (column_index, column_ui) in columns.iter_mut().enumerate() {
                     for row_index in 0..row_count {
-                        // 横方向に列を埋めてから、次の行へ移る
-                        let index = row_major_item_index(column_index, row_index, column_count);
+                        // 列の外形を先に決め、JSONの順番で左列から縦に埋める
+                        let Some(index) = column_major_item_index(
+                            column_index,
+                            row_index,
+                            column_count,
+                            self.config.items.len(),
+                        ) else {
+                            continue;
+                        };
 
                         let Some(item) = self.config.items.get(index) else {
                             continue;
@@ -1278,7 +1304,7 @@ fn generate_name(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Config, background_image_dimensions_error, resized_window_width, row_major_item_index,
+        Config, background_image_dimensions_error, column_major_item_index, resized_window_width,
         snapped_window_width, window_column_count,
     };
 
@@ -1347,10 +1373,29 @@ mod tests {
     }
 
     #[test]
-    fn four_items_in_three_columns_fill_the_first_row_before_the_second() {
-        assert_eq!(row_major_item_index(0, 0, 3), 0);
-        assert_eq!(row_major_item_index(1, 0, 3), 1);
-        assert_eq!(row_major_item_index(2, 0, 3), 2);
-        assert_eq!(row_major_item_index(0, 1, 3), 3);
+    fn four_items_in_three_columns_fill_down_each_column_in_json_order() {
+        assert_eq!(column_major_item_index(0, 0, 3, 4), Some(0));
+        assert_eq!(column_major_item_index(0, 1, 3, 4), Some(1));
+        assert_eq!(column_major_item_index(1, 0, 3, 4), Some(2));
+        assert_eq!(column_major_item_index(2, 0, 3, 4), Some(3));
+        assert_eq!(column_major_item_index(1, 1, 3, 4), None);
+    }
+
+    #[test]
+    fn five_items_in_three_columns_distribute_extra_items_to_left_columns() {
+        assert_eq!(column_major_item_index(0, 0, 3, 5), Some(0));
+        assert_eq!(column_major_item_index(0, 1, 3, 5), Some(1));
+        assert_eq!(column_major_item_index(1, 0, 3, 5), Some(2));
+        assert_eq!(column_major_item_index(1, 1, 3, 5), Some(3));
+        assert_eq!(column_major_item_index(2, 0, 3, 5), Some(4));
+        assert_eq!(column_major_item_index(2, 1, 3, 5), None);
+    }
+
+    #[test]
+    fn evenly_divisible_items_fill_every_column_to_the_same_height() {
+        assert_eq!(column_major_item_index(0, 0, 2, 4), Some(0));
+        assert_eq!(column_major_item_index(0, 1, 2, 4), Some(1));
+        assert_eq!(column_major_item_index(1, 0, 2, 4), Some(2));
+        assert_eq!(column_major_item_index(1, 1, 2, 4), Some(3));
     }
 }
