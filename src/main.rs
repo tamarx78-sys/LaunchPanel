@@ -18,6 +18,7 @@ use tray_icon::{
     Icon, TrayIconBuilder,
     menu::{Menu, MenuItem},
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
 
 const DEFAULT_WINDOW_WIDTH: f32 = 280.0;
 const MIN_WINDOW_WIDTH: f32 = 200.0;
@@ -132,6 +133,15 @@ fn resized_window_width(
     }
 
     Some(current_window_width + (new_column_width - old_column_width) * current_column_count as f32)
+}
+
+fn snapped_window_width(column_width: f32, column_count: usize) -> f32 {
+    column_width * column_count.max(1) as f32
+}
+
+fn primary_mouse_button_down() -> bool {
+    // SAFETY: GetAsyncKeyState only reads the current state of the supplied virtual key.
+    unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0 }
 }
 
 fn edit_rgb_color(ui: &mut egui::Ui, rgb: &mut [u8; 3]) -> egui::Response {
@@ -548,6 +558,10 @@ fn main() -> eframe::Result {
                 show_settings_window: false,
                 settings_edit: config.settings.clone(),
                 settings_error: None,
+
+                last_observed_window_width: None,
+                user_resize_active: false,
+                programmatic_resize_target: None,
             }))
         }),
     )
@@ -587,6 +601,10 @@ struct MyApp {
     settings_error: Option<String>,
 
     suppress_auto_hide_until_focused: bool,
+
+    last_observed_window_width: Option<f32>,
+    user_resize_active: bool,
+    programmatic_resize_target: Option<f32>,
 }
 
 impl MyApp {
@@ -643,6 +661,39 @@ impl eframe::App for MyApp {
             || self.show_edit_window
             || self.show_settings_window
             || self.show_delete_window;
+
+        let width_changed = self
+            .last_observed_window_width
+            .is_some_and(|previous| (window_width - previous).abs() > 0.5);
+        let primary_mouse_button_down = primary_mouse_button_down();
+
+        if let Some(target) = self.programmatic_resize_target {
+            if width_changed || (window_width - target).abs() <= 0.5 {
+                self.programmatic_resize_target = None;
+            }
+        } else if width_changed && primary_mouse_button_down && !dialog_open {
+            self.user_resize_active = true;
+        }
+
+        if dialog_open {
+            self.user_resize_active = false;
+        } else if self.user_resize_active {
+            if primary_mouse_button_down {
+                ctx.request_repaint();
+            } else {
+                let target_width =
+                    snapped_window_width(self.config.settings.window.width, column_count);
+                if (window_width - target_width).abs() > 0.5 {
+                    self.programmatic_resize_target = Some(target_width);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+                        target_width,
+                        window_height,
+                    )));
+                }
+                self.user_resize_active = false;
+            }
+        }
+        self.last_observed_window_width = Some(window_width);
 
         let auto_hide_requested = !focused
             && !dialog_open
@@ -1107,6 +1158,7 @@ impl eframe::App for MyApp {
                                 );
                                 save_config(&self.config);
                                 if let Some(resized_width) = resized_width {
+                                    self.programmatic_resize_target = Some(resized_width);
                                     ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
                                         egui::vec2(resized_width, window_height),
                                     ));
@@ -1210,7 +1262,9 @@ fn generate_name(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, background_image_dimensions_error, resized_window_width};
+    use super::{
+        Config, background_image_dimensions_error, resized_window_width, snapped_window_width,
+    };
 
     #[test]
     fn background_image_dimensions_must_be_below_2000_pixels() {
@@ -1252,5 +1306,16 @@ mod tests {
     #[test]
     fn changed_column_width_preserves_column_count_and_existing_overhead() {
         assert_eq!(resized_window_width(421.0, 2, 200.0, 300.0), Some(621.0));
+    }
+
+    #[test]
+    fn snapped_width_is_an_exact_multiple_of_the_column_width() {
+        assert_eq!(snapped_window_width(200.0, 2), 400.0);
+        assert_eq!(snapped_window_width(180.0, 3), 540.0);
+    }
+
+    #[test]
+    fn snapped_width_always_keeps_at_least_one_column() {
+        assert_eq!(snapped_window_width(200.0, 0), 200.0);
     }
 }
