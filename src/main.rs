@@ -139,6 +139,13 @@ fn snapped_window_width(column_width: f32, column_count: usize) -> f32 {
     column_width * column_count.max(1) as f32
 }
 
+fn window_column_count(window_width: f32, column_width: f32, item_count: usize) -> usize {
+    const WIDTH_BOUNDARY_TOLERANCE: f32 = 0.5;
+
+    let column_count = ((window_width + WIDTH_BOUNDARY_TOLERANCE) / column_width).floor() as usize;
+    column_count.max(1).min(item_count.max(1))
+}
+
 fn foreground_window_is_moving_or_resizing() -> bool {
     let mut info = GUITHREADINFO {
         cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
@@ -651,8 +658,7 @@ impl eframe::App for MyApp {
             .unwrap_or(600.0);
 
         let column_width = self.config.settings.window.width;
-        let column_count = (window_width / column_width).floor().max(1.0) as usize;
-        let column_count = column_count.min(self.config.items.len().max(1));
+        let column_count = window_column_count(window_width, column_width, self.config.items.len());
 
         let focused = ctx.input(|i| i.focused);
 
@@ -1269,6 +1275,7 @@ fn generate_name(path: &str) -> String {
 mod tests {
     use super::{
         Config, background_image_dimensions_error, resized_window_width, snapped_window_width,
+        window_column_count,
     };
 
     #[test]
@@ -1322,5 +1329,16 @@ mod tests {
     #[test]
     fn snapped_width_always_keeps_at_least_one_column() {
         assert_eq!(snapped_window_width(200.0, 0), 200.0);
+    }
+
+    #[test]
+    fn column_count_tolerates_subpixel_rounding_at_width_boundary() {
+        assert_eq!(window_column_count(599.75, 200.0, 4), 3);
+        assert_eq!(window_column_count(799.75, 200.0, 4), 4);
+    }
+
+    #[test]
+    fn column_count_does_not_cross_a_real_width_boundary_early() {
+        assert_eq!(window_column_count(599.0, 200.0, 4), 2);
     }
 }
