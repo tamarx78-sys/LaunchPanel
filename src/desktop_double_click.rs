@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::thread::{self, JoinHandle};
 
-use windows::Win32::Foundation::{LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
 };
@@ -238,41 +238,44 @@ impl Automation {
         }
     }
 
-    fn point_is_icon(&self, point: POINT) -> Option<bool> {
-        // SAFETY: UI Automation accepts screen coordinates and owns the returned element.
-        let mut element = unsafe { self.0.ElementFromPoint(point) }.ok()?;
+    fn point_is_icon(&self, desktop_list: HWND, point: POINT) -> Option<bool> {
+        // Start from Explorer's desktop list instead of ElementFromPoint. Overlays such as the
+        // NVIDIA in-game overlay can be exposed to UI Automation even when mouse hit-testing
+        // correctly reaches the desktop behind them.
+        let root = unsafe { self.0.ElementFromHandle(desktop_list) }.ok()?;
         // SAFETY: The automation object owns the returned control-view walker.
         let walker = unsafe { self.0.ControlViewWalker() }.ok()?;
+        // SAFETY: root is a live automation element for the desktop list.
+        let mut element = match unsafe { walker.GetFirstChildElement(&root) } {
+            Ok(first) => first,
+            Err(_) => return Some(false),
+        };
 
-        for _depth in 0..8 {
+        for _ in 0..4096 {
             // SAFETY: Reading current properties is valid for a live automation element.
             let control_type = unsafe { element.CurrentControlType() }.ok()?;
-
-            #[cfg(debug_assertions)]
-            {
-                // Property failures are diagnostic-only and must not affect classification.
-                let class_name = unsafe { element.CurrentClassName() }
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|_| "<unavailable>".to_string());
-                let name = unsafe { element.CurrentName() }
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|_| "<unavailable>".to_string());
-                eprintln!(
-                    "desktop-uia depth={_depth} type={} class={class_name:?} name={name:?}",
-                    control_type.0
-                );
-            }
-
             if control_type == UIA_ListItemControlTypeId {
-                return Some(true);
+                // SAFETY: Reading the bounding rectangle is valid for a live element.
+                let rect = unsafe { element.CurrentBoundingRectangle() }.ok()?;
+                if point.x >= rect.left
+                    && point.x < rect.right
+                    && point.y >= rect.top
+                    && point.y < rect.bottom
+                {
+                    return Some(true);
+                }
             }
 
-            // ElementFromPoint can return an icon's text/image child. Walk the control-view
-            // parents so the enclosing desktop ListItem is included in the decision.
-            element = unsafe { walker.GetParentElement(&element) }.ok()?;
+            // Reaching the end of the sibling list means the point was desktop background.
+            match unsafe { walker.GetNextSiblingElement(&element) } {
+                Ok(next) => element = next,
+                Err(_) => return Some(false),
+            }
         }
 
-        Some(false)
+        // A pathological accessibility tree should fail closed instead of treating an icon as
+        // desktop background.
+        Some(true)
     }
 }
 
@@ -299,7 +302,7 @@ fn desktop_blank_region(point: POINT, automation: Option<&Automation>) -> Option
     let root_class = class_name(root);
     let desktop_root = root_class == "Progman" || root_class == "WorkerW";
 
-    let is_icon = automation?.point_is_icon(point)?;
+    let is_icon = automation?.point_is_icon(target, point)?;
     let blank = target_is_list && has_def_view && desktop_root && !is_icon;
 
     #[cfg(debug_assertions)]
