@@ -240,10 +240,39 @@ impl Automation {
 
     fn point_is_icon(&self, point: POINT) -> Option<bool> {
         // SAFETY: UI Automation accepts screen coordinates and owns the returned element.
-        let element = unsafe { self.0.ElementFromPoint(point) }.ok()?;
-        // SAFETY: Reading the current property is valid for a live automation element.
-        let control_type = unsafe { element.CurrentControlType() }.ok()?;
-        Some(control_type == UIA_ListItemControlTypeId)
+        let mut element = unsafe { self.0.ElementFromPoint(point) }.ok()?;
+        // SAFETY: The automation object owns the returned control-view walker.
+        let walker = unsafe { self.0.ControlViewWalker() }.ok()?;
+
+        for _depth in 0..8 {
+            // SAFETY: Reading current properties is valid for a live automation element.
+            let control_type = unsafe { element.CurrentControlType() }.ok()?;
+
+            #[cfg(debug_assertions)]
+            {
+                // Property failures are diagnostic-only and must not affect classification.
+                let class_name = unsafe { element.CurrentClassName() }
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|_| "<unavailable>".to_string());
+                let name = unsafe { element.CurrentName() }
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|_| "<unavailable>".to_string());
+                eprintln!(
+                    "desktop-uia depth={_depth} type={} class={class_name:?} name={name:?}",
+                    control_type.0
+                );
+            }
+
+            if control_type == UIA_ListItemControlTypeId {
+                return Some(true);
+            }
+
+            // ElementFromPoint can return an icon's text/image child. Walk the control-view
+            // parents so the enclosing desktop ListItem is included in the decision.
+            element = unsafe { walker.GetParentElement(&element) }.ok()?;
+        }
+
+        Some(false)
     }
 }
 

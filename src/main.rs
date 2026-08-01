@@ -713,7 +713,9 @@ impl eframe::App for MyApp {
 
         let focused = ctx.input(|i| i.focused);
 
-        if focused {
+        // Viewport focus can still contain the pre-restore value in the frame that consumes a
+        // show request. Keep auto-hide suppressed until a later frame confirms real focus.
+        if focused && !showing {
             self.suppress_auto_hide_until_focused = false;
         }
 
