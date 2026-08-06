@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod desktop_double_click;
 mod hotkey;
 mod icon;
 mod single_instance;
@@ -66,6 +67,8 @@ struct Settings {
     background_image: String,
     #[serde(default)]
     item_button: ItemButtonConfig,
+    #[serde(default)]
+    desktop_double_click: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -410,6 +413,23 @@ fn cover_uv(container_size: egui::Vec2, image_size: egui::Vec2) -> egui::Rect {
     }
 }
 
+fn start_desktop_double_click_hook(
+    show_requested: &Arc<AtomicBool>,
+    repaint_ctx: &egui::Context,
+) -> Option<desktop_double_click::DesktopDoubleClickHook> {
+    let show_requested = show_requested.clone();
+    let repaint_ctx = repaint_ctx.clone();
+    desktop_double_click::DesktopDoubleClickHook::start(move || {
+        show_requested.store(true, Ordering::SeqCst);
+        repaint_ctx.request_repaint();
+    })
+    .inspect_err(|_error| {
+        #[cfg(debug_assertions)]
+        eprintln!("{_error}");
+    })
+    .ok()
+}
+
 fn main() -> eframe::Result {
     let single_instance = match single_instance::acquire().expect("単一起動の初期化に失敗しました")
     {
@@ -559,6 +579,12 @@ fn main() -> eframe::Result {
             let background_texture =
                 load_background_texture(&cc.egui_ctx, &config.settings.background_image);
 
+            let desktop_double_click_hook = if config.settings.desktop_double_click {
+                start_desktop_double_click_hook(&show_requested, &cc.egui_ctx)
+            } else {
+                None
+            };
+
             Ok(Box::new(MyApp {
                 config: config.clone(),
 
@@ -593,6 +619,7 @@ fn main() -> eframe::Result {
                 show_settings_window: false,
                 settings_edit: config.settings.clone(),
                 settings_error: None,
+                desktop_double_click_hook,
 
                 last_observed_window_width: None,
                 user_resize_active: false,
@@ -634,6 +661,7 @@ struct MyApp {
     show_settings_window: bool,
     settings_edit: Settings, // ←追加
     settings_error: Option<String>,
+    desktop_double_click_hook: Option<desktop_double_click::DesktopDoubleClickHook>,
 
     suppress_auto_hide_until_focused: bool,
 
@@ -685,7 +713,9 @@ impl eframe::App for MyApp {
 
         let focused = ctx.input(|i| i.focused);
 
-        if focused {
+        // Viewport focus can still contain the pre-restore value in the frame that consumes a
+        // show request. Keep auto-hide suppressed until a later frame confirms real focus.
+        if focused && !showing {
             self.suppress_auto_hide_until_focused = false;
         }
 
@@ -1169,6 +1199,18 @@ impl eframe::App for MyApp {
                                                 });
                                         });
                                 });
+
+                            egui::CollapsingHeader::new("実験的機能")
+                                .default_open(false)
+                                .show(ui, |ui| {
+                                    ui.checkbox(
+                                        &mut self.settings_edit.desktop_double_click,
+                                        "デスクトップ空白のダブルクリックで表示",
+                                    );
+                                    ui.small(
+                                        "Windows更新やExplorerの構成によって、動作しない可能性があります。",
+                                    );
+                                });
                         });
 
                     if let Some(error) = &self.settings_error {
@@ -1192,12 +1234,31 @@ impl eframe::App for MyApp {
                                     self.config.settings.window.width,
                                     self.settings_edit.window.width,
                                 );
+                                let desktop_double_click_changed = self
+                                    .config
+                                    .settings
+                                    .desktop_double_click
+                                    != self.settings_edit.desktop_double_click;
                                 self.config.settings = self.settings_edit.clone();
                                 self.background_texture = load_background_texture(
                                     ctx,
                                     &self.config.settings.background_image,
                                 );
                                 save_config(&self.config);
+                                if desktop_double_click_changed {
+                                    self.desktop_double_click_hook = if self
+                                        .config
+                                        .settings
+                                        .desktop_double_click
+                                    {
+                                        start_desktop_double_click_hook(
+                                            &self.show_requested,
+                                            ctx,
+                                        )
+                                    } else {
+                                        None
+                                    };
+                                }
                                 if let Some(resized_width) = resized_width {
                                     self.programmatic_resize_target = Some(resized_width);
                                     ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
