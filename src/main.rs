@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 
@@ -415,11 +415,16 @@ fn cover_uv(container_size: egui::Vec2, image_size: egui::Vec2) -> egui::Rect {
 
 fn start_desktop_double_click_hook(
     show_requested: &Arc<AtomicBool>,
+    desktop_show_position: &Arc<Mutex<Option<[i32; 2]>>>,
     repaint_ctx: &egui::Context,
 ) -> Option<desktop_double_click::DesktopDoubleClickHook> {
     let show_requested = show_requested.clone();
+    let desktop_show_position = desktop_show_position.clone();
     let repaint_ctx = repaint_ctx.clone();
-    desktop_double_click::DesktopDoubleClickHook::start(move || {
+    desktop_double_click::DesktopDoubleClickHook::start(move |point| {
+        *desktop_show_position
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some([point.x, point.y]);
         show_requested.store(true, Ordering::SeqCst);
         repaint_ctx.request_repaint();
     })
@@ -451,6 +456,7 @@ fn main() -> eframe::Result {
     tray_menu.append(&quit_item).unwrap();
 
     let show_requested = Arc::new(AtomicBool::new(false));
+    let desktop_show_position = Arc::new(Mutex::new(None));
     let settings_requested = Arc::new(AtomicBool::new(false));
     let settings_requested_for_thread = settings_requested.clone();
 
@@ -527,17 +533,23 @@ fn main() -> eframe::Result {
             cc.egui_ctx.set_fonts(fonts);
 
             let show_requested_for_thread = show_requested.clone();
+            let desktop_show_position_for_tray = desktop_show_position.clone();
             let repaint_ctx = cc.egui_ctx.clone();
 
             let show_requested_for_single_instance = show_requested.clone();
+            let desktop_show_position_for_single_instance = desktop_show_position.clone();
             let repaint_ctx_for_single_instance = cc.egui_ctx.clone();
 
             single_instance.listen(move || {
+                *desktop_show_position_for_single_instance
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
                 show_requested_for_single_instance.store(true, Ordering::SeqCst);
                 repaint_ctx_for_single_instance.request_repaint();
             });
 
             let show_requested_for_hotkey = show_requested.clone();
+            let desktop_show_position_for_hotkey = desktop_show_position.clone();
             let repaint_ctx_for_hotkey = cc.egui_ctx.clone();
 
             let hk_for_thread = hk.clone();
@@ -550,6 +562,9 @@ fn main() -> eframe::Result {
                     hk_for_thread.win,
                     &hk_for_thread.key,
                     move || {
+                        *desktop_show_position_for_hotkey
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
                         show_requested_for_hotkey.store(true, Ordering::SeqCst);
                         repaint_ctx_for_hotkey.request_repaint();
                     },
@@ -562,6 +577,9 @@ fn main() -> eframe::Result {
                 loop {
                     if let Ok(event) = receiver.recv() {
                         if event.id == show_id {
+                            *desktop_show_position_for_tray
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
                             show_requested_for_thread.store(true, Ordering::SeqCst);
                             repaint_ctx.request_repaint();
                         }
@@ -580,7 +598,11 @@ fn main() -> eframe::Result {
                 load_background_texture(&cc.egui_ctx, &config.settings.background_image);
 
             let desktop_double_click_hook = if config.settings.desktop_double_click {
-                start_desktop_double_click_hook(&show_requested, &cc.egui_ctx)
+                start_desktop_double_click_hook(
+                    &show_requested,
+                    &desktop_show_position,
+                    &cc.egui_ctx,
+                )
             } else {
                 None
             };
@@ -609,6 +631,7 @@ fn main() -> eframe::Result {
                 delete_index: 0,
 
                 show_requested: show_requested.clone(),
+                desktop_show_position: desktop_show_position.clone(),
                 settings_requested: settings_requested.clone(),
 
                 window_hidden: false,
@@ -653,6 +676,7 @@ struct MyApp {
     delete_index: usize,
 
     show_requested: Arc<AtomicBool>,
+    desktop_show_position: Arc<Mutex<Option<[i32; 2]>>>,
     settings_requested: Arc<AtomicBool>, // ←追加
 
     window_hidden: bool,
@@ -773,6 +797,21 @@ impl eframe::App for MyApp {
         if showing {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+
+            if let Some([x, y]) = self
+                .desktop_show_position
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+            {
+                let pixels_per_point = ctx.pixels_per_point();
+                #[cfg(debug_assertions)]
+                eprintln!("desktop-show physical=({x}, {y}) pixels_per_point={pixels_per_point}");
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+                    x as f32 / pixels_per_point,
+                    y as f32 / pixels_per_point,
+                )));
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             ctx.request_repaint();
 
@@ -1253,6 +1292,7 @@ impl eframe::App for MyApp {
                                     {
                                         start_desktop_double_click_hook(
                                             &self.show_requested,
+                                            &self.desktop_show_position,
                                             ctx,
                                         )
                                     } else {
