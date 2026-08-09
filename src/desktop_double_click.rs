@@ -39,7 +39,7 @@ pub struct DesktopDoubleClickHook {
 impl DesktopDoubleClickHook {
     pub fn start<F>(on_double_click: F) -> Result<Self, String>
     where
-        F: Fn() + Send + 'static,
+        F: Fn(POINT) + Send + 'static,
     {
         let (event_sender, event_receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
         let (ready_sender, ready_receiver) = mpsc::channel();
@@ -160,7 +160,7 @@ struct FirstClick {
 
 fn worker_loop<F>(receiver: Receiver<MouseEvent>, on_double_click: F)
 where
-    F: Fn(),
+    F: Fn(POINT),
 {
     let automation = Automation::new();
     let mut first_click: Option<FirstClick> = None;
@@ -194,7 +194,7 @@ where
 
         if matched {
             first_click = None;
-            on_double_click();
+            on_double_click(event.point);
         } else {
             first_click = Some(FirstClick {
                 point: event.point,
