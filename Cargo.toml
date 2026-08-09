@@ -1,6 +1,6 @@
 [package]
 name = "launchpanel"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2024"
 authors = ["Tamarx78-sys"]
 rust-version = "1.85"
