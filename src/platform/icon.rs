@@ -14,9 +14,13 @@ use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC,
     DeleteObject, GetDIBits, GetObjectW, HBITMAP, HGDIOBJ,
 };
-use windows::Win32::Storage::FileSystem::{GetFileAttributesW, INVALID_FILE_ATTRIBUTES, SearchPathW};
+use windows::Win32::Storage::FileSystem::{
+    GetFileAttributesW, INVALID_FILE_ATTRIBUTES, SearchPathW,
+};
 use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
-use windows::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
+use windows::Win32::System::Registry::{
+    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW,
+};
 use windows::Win32::UI::Shell::{
     ASSOCF_IS_PROTOCOL, ASSOCSTR_EXECUTABLE, AssocQueryStringW, IShellItemImageFactory,
     SHCreateItemFromParsingName, SIIGBF_RESIZETOFIT,
@@ -39,7 +43,9 @@ pub fn load(path: &str, size: i32) -> Option<Pixels> {
     unsafe {
         let factory: IShellItemImageFactory =
             SHCreateItemFromParsingName(PCWSTR(wide.as_ptr()), None).ok()?;
-        let bitmap = factory.GetImage(SIZE { cx: size, cy: size }, SIIGBF_RESIZETOFIT).ok()?;
+        let bitmap = factory
+            .GetImage(SIZE { cx: size, cy: size }, SIIGBF_RESIZETOFIT)
+            .ok()?;
         let pixels = extract_pixels(bitmap);
         let _ = DeleteObject(HGDIOBJ(bitmap.0));
         pixels
@@ -70,8 +76,13 @@ fn protocol_scheme(path: &str) -> Option<&str> {
     let colon = path.find(':')?;
     let scheme = &path[..colon];
     let valid = colon > 1
-        && scheme.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-        && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c));
+        && scheme
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c));
     (valid && !scheme.eq_ignore_ascii_case("shell")).then_some(scheme)
 }
 
@@ -89,7 +100,8 @@ fn assoc_executable(scheme: &str) -> Option<String> {
             Some(PWSTR(buf.as_mut_ptr())),
             &mut len,
         )
-        .ok().ok()?;
+        .ok()
+        .ok()?;
     }
     let s = String::from_utf16_lossy(&buf[..len.saturating_sub(1) as usize]);
     exists(&s).then_some(s)
@@ -119,15 +131,31 @@ fn search_path(name: &str) -> Option<String> {
     let wide = to_wide(name);
     let mut buf = [0u16; 1024];
     // SAFETY: バッファ長はスライスで渡す
-    let n = unsafe { SearchPathW(None, PCWSTR(wide.as_ptr()), w!(".exe"), Some(&mut buf), None) } as usize;
+    let n = unsafe {
+        SearchPathW(
+            None,
+            PCWSTR(wide.as_ptr()),
+            w!(".exe"),
+            Some(&mut buf),
+            None,
+        )
+    } as usize;
     (n > 0 && n < buf.len()).then(|| String::from_utf16_lossy(&buf[..n]))
 }
 
 /// HKCU/HKLM の App Paths に登録された実行可能名を解決する。
 fn app_path(name: &str) -> Option<String> {
-    let file = if name.to_ascii_lowercase().ends_with(".exe") { name.to_owned() } else { format!("{name}.exe") };
-    let subkey = to_wide(&format!(r"Software\Microsoft\Windows\CurrentVersion\App Paths\{file}"));
-    [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE].into_iter().find_map(|root| read_default(root, &subkey))
+    let file = if name.to_ascii_lowercase().ends_with(".exe") {
+        name.to_owned()
+    } else {
+        format!("{name}.exe")
+    };
+    let subkey = to_wide(&format!(
+        r"Software\Microsoft\Windows\CurrentVersion\App Paths\{file}"
+    ));
+    [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE]
+        .into_iter()
+        .find_map(|root| read_default(root, &subkey))
 }
 
 fn read_default(root: HKEY, subkey: &[u16]) -> Option<String> {
@@ -149,7 +177,9 @@ fn read_default(root: HKEY, subkey: &[u16]) -> Option<String> {
         return None;
     }
     let len = (bytes as usize / 2).saturating_sub(1);
-    let s = String::from_utf16_lossy(&buf[..len]).trim_matches('"').to_owned();
+    let s = String::from_utf16_lossy(&buf[..len])
+        .trim_matches('"')
+        .to_owned();
     exists(&s).then_some(s)
 }
 
@@ -199,7 +229,11 @@ unsafe fn extract_pixels(bitmap: HBITMAP) -> Option<Pixels> {
             return None;
         }
         normalize_alpha(&mut data);
-        Some(Pixels { width, height, data })
+        Some(Pixels {
+            width,
+            height,
+            data,
+        })
     }
 }
 
@@ -210,7 +244,9 @@ fn normalize_alpha(data: &mut [u8]) {
         data.chunks_exact_mut(4).for_each(|p| p[3] = 255);
         return;
     }
-    let premultiplied = data.chunks_exact(4).all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]);
+    let premultiplied = data
+        .chunks_exact(4)
+        .all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]);
     if !premultiplied {
         for p in data.chunks_exact_mut(4) {
             let a = p[3] as u32;
@@ -248,11 +284,16 @@ mod tests {
         assert_eq!(d, vec![128, 128, 128, 128]);
     }
 
+    /// 実機のシェルに依存する (既定のブラウザーなど)。手動実行: cargo test -- --ignored
     #[test]
+    #[ignore]
     fn resolves_executable_name_and_url() {
         // SAFETY: テストスレッドでの COM 初期化
         unsafe {
-            let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
+            let _ = windows::Win32::System::Com::CoInitializeEx(
+                None,
+                windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+            );
         }
         assert!(resolve("notepad").is_some_and(|p| p.to_lowercase().ends_with("notepad.exe")));
         assert!(load("notepad", 32).is_some());

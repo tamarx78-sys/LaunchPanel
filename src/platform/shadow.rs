@@ -10,15 +10,15 @@
 use std::ffi::c_void;
 
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+use windows::Win32::Graphics::Gdi::{AC_SRC_ALPHA, AC_SRC_OVER, BLENDFUNCTION};
 use windows::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC,
-    DeleteObject, GetDC, HGDIOBJ, ReleaseDC, SelectObject,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS,
+    DeleteDC, DeleteObject, GetDC, HGDIOBJ, ReleaseDC, SelectObject,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::Win32::Graphics::Gdi::{AC_SRC_ALPHA, AC_SRC_OVER, BLENDFUNCTION};
 use windows::core::w;
 
 const SUBCLASS_ID: usize = 0x4C50_5348; // "LPSH"
@@ -65,8 +65,14 @@ pub unsafe extern "system" fn lp_set_window_shadow(hwnd: isize, enabled: i32, op
             return 1;
         }
 
-        let Some(shadow) = create_shadow_window() else { return 0 };
-        let state = Box::into_raw(Box::new(ShadowState { shadow, opacity, rendered: (0, 0, 0, -1) }));
+        let Some(shadow) = create_shadow_window() else {
+            return 0;
+        };
+        let state = Box::into_raw(Box::new(ShadowState {
+            shadow,
+            opacity,
+            rendered: (0, 0, 0, -1),
+        }));
         if !SetWindowSubclass(target, Some(subclass_proc), SUBCLASS_ID, state as usize).as_bool() {
             let _ = DestroyWindow(shadow);
             drop(Box::from_raw(state));
@@ -157,14 +163,19 @@ unsafe fn update(target: HWND, state: &mut ShadowState) {
         let radius = (RADIUS_DIP * scale).round() as i32;
         let offset_y = (OFFSET_Y_DIP * scale).round() as i32;
         let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
-        let pos = POINT { x: rect.left - radius, y: rect.top - radius + offset_y };
-        let size = SIZE { cx: w + radius * 2, cy: h + radius * 2 };
+        let pos = POINT {
+            x: rect.left - radius,
+            y: rect.top - radius + offset_y,
+        };
+        let size = SIZE {
+            cx: w + radius * 2,
+            cy: h + radius * 2,
+        };
 
         let key = (w, h, dpi, state.opacity);
-        if state.rendered != key {
-            if render(state.shadow, pos, size, radius, offset_y, state.opacity) {
-                state.rendered = key;
-            }
+        if state.rendered != key && render(state.shadow, pos, size, radius, offset_y, state.opacity)
+        {
+            state.rendered = key;
         }
         // 位置を合わせ、Z 順を対象の直下にする
         let _ = SetWindowPos(
@@ -180,8 +191,21 @@ unsafe fn update(target: HWND, state: &mut ShadowState) {
 }
 
 /// 影のビットマップを作ってレイヤードウィンドウへ反映する。
-unsafe fn render(shadow: HWND, pos: POINT, size: SIZE, radius: i32, offset_y: i32, opacity: i32) -> bool {
-    let pixels = shadow_pixels(size.cx, size.cy, radius, offset_y, opacity as f64 / 100.0 * 255.0);
+unsafe fn render(
+    shadow: HWND,
+    pos: POINT,
+    size: SIZE,
+    radius: i32,
+    offset_y: i32,
+    opacity: i32,
+) -> bool {
+    let pixels = shadow_pixels(
+        size.cx,
+        size.cy,
+        radius,
+        offset_y,
+        opacity as f64 / 100.0 * 255.0,
+    );
     // SAFETY: GDI 資源は関数内で生成・解放する
     unsafe {
         let screen = GetDC(None);
@@ -252,7 +276,9 @@ fn shadow_pixels(width: i32, height: i32, radius: i32, offset_y: i32, max_alpha:
             if x >= x0 && x < x1 && y >= cy0 && y < cy1 {
                 continue;
             }
-            let a = (max_alpha * gx[x as usize] * gy[y as usize]).round().clamp(0.0, 255.0) as u8;
+            let a = (max_alpha * gx[x as usize] * gy[y as usize])
+                .round()
+                .clamp(0.0, 255.0) as u8;
             data[((y * width + x) * 4 + 3) as usize] = a; // 黒なので色成分は 0 のまま (乗算済み)
         }
     }
@@ -303,13 +329,25 @@ mod tests {
         let alpha = |x: i32, y: i32| px[((y * w + x) * 4 + 3) as usize];
         assert_eq!(alpha(w / 2, h / 2), 0, "本体の真下は透明");
         assert!(alpha(r - 3, h / 2) > 0, "左辺のすぐ外に影");
-        assert!(alpha(w / 2, h - r + 1) > alpha(w / 2, r - oy - 5), "下側の方が濃い (下へずらしている)");
+        assert!(
+            alpha(w / 2, h - r + 1) > alpha(w / 2, r - oy - 5),
+            "下側の方が濃い (下へずらしている)"
+        );
         assert_eq!(alpha(0, 0), 0);
-        assert!(px.chunks_exact(4).all(|p| p[0] == 0 && p[1] == 0 && p[2] == 0), "黒の乗算済み");
+        assert!(
+            px.chunks_exact(4)
+                .all(|p| p[0] == 0 && p[1] == 0 && p[2] == 0),
+            "黒の乗算済み"
+        );
     }
 }
 
-unsafe extern "system" fn shadow_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn shadow_wndproc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     match msg {
         // クリック透過に加え、ヒットテストでも素通りさせる
         WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
@@ -325,8 +363,17 @@ mod opacity_tests {
     #[test]
     fn opacity_scales_alpha() {
         let (w, h, r) = (100, 80, 16);
-        let peak = |a: f64| shadow_pixels(w, h, r, 0, a).chunks_exact(4).map(|p| p[3]).max().unwrap();
+        let peak = |a: f64| {
+            shadow_pixels(w, h, r, 0, a)
+                .chunks_exact(4)
+                .map(|p| p[3])
+                .max()
+                .unwrap()
+        };
         assert_eq!(peak(0.0), 0, "0% なら完全に透明");
-        assert!(peak(255.0) > peak(102.0) && peak(102.0) > 0, "濃さに比例して濃くなる");
+        assert!(
+            peak(255.0) > peak(102.0) && peak(102.0) > 0,
+            "濃さに比例して濃くなる"
+        );
     }
 }

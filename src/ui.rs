@@ -60,7 +60,11 @@ pub fn switch(gfx: &Gfx, r: Rect, on: bool, st: State) {
     }
     let d = r.h - 8.0;
     let x = if on { r.x + r.w - 4.0 - d } else { r.x + 4.0 };
-    let knob = if on { Color::rgba(0x10, 0x14, 0x1A, 0xFF) } else { MUTED };
+    let knob = if on {
+        Color::rgba(0x10, 0x14, 0x1A, 0xFF)
+    } else {
+        MUTED
+    };
     gfx.fill_round(Rect::new(x, r.y + 4.0, d, d), d / 2.0, knob);
 }
 
@@ -75,7 +79,11 @@ pub fn slider(gfx: &Gfx, r: Rect, frac: f32, st: State) {
     let cx = r.x + r.w * frac;
     let knob = Rect::new(cx - d / 2.0, r.y + r.h / 2.0 - d / 2.0, d, d);
     gfx.fill_round(knob, d / 2.0, if st.disabled { DISABLED } else { TEXT });
-    gfx.fill_round(knob.inset(4.0, 4.0), (d - 8.0) / 2.0, if st.disabled { CONTROL } else { ACCENT });
+    gfx.fill_round(
+        knob.inset(4.0, 4.0),
+        (d - 8.0) / 2.0,
+        if st.disabled { CONTROL } else { ACCENT },
+    );
 }
 
 /// スライダー上の位置 `x` から 0.0～1.0 を求める。
@@ -85,12 +93,30 @@ pub fn slider_frac(r: Rect, x: f32) -> f32 {
 
 /// ドラッグで値を変える欄。左右の矢印でドラッグ方向を示す。
 pub fn scrubber(gfx: &Gfx, r: Rect, value: &str, st: State) {
-    gfx.fill_round(r, 6.0, if st.hover || st.active { CONTROL_HOVER } else { CONTROL });
+    gfx.fill_round(
+        r,
+        6.0,
+        if st.hover || st.active {
+            CONTROL_HOVER
+        } else {
+            CONTROL
+        },
+    );
     if st.active {
         gfx.stroke_round(r, 6.0, ACCENT, 1.5);
     }
-    gfx.text("\u{E76B}", Rect::new(r.x + 4.0, r.y, 20.0, r.h), MUTED, TextStyle::Glyph);
-    gfx.text("\u{E76C}", Rect::new(r.x + r.w - 24.0, r.y, 20.0, r.h), MUTED, TextStyle::Glyph);
+    gfx.text(
+        "\u{E76B}",
+        Rect::new(r.x + 4.0, r.y, 20.0, r.h),
+        MUTED,
+        TextStyle::Glyph,
+    );
+    gfx.text(
+        "\u{E76C}",
+        Rect::new(r.x + r.w - 24.0, r.y, 20.0, r.h),
+        MUTED,
+        TextStyle::Glyph,
+    );
     gfx.text(value, r.inset(24.0, 0.0), TEXT, TextStyle::Value);
 }
 
@@ -119,14 +145,40 @@ pub fn toggle(gfx: &Gfx, r: Rect, label: &str, on: bool, st: State) {
 
 /// 一覧から選ぶボタン (右端に下向きの矢印)。
 pub fn dropdown(gfx: &Gfx, r: Rect, value: &str, st: State) {
-    gfx.fill_round(r, 6.0, if st.hover || st.active { CONTROL_HOVER } else { CONTROL });
-    gfx.text(value, Rect::new(r.x, r.y, r.w - 20.0, r.h), TEXT, TextStyle::Value);
-    gfx.text("\u{E70D}", Rect::new(r.x + r.w - 26.0, r.y, 20.0, r.h), MUTED, TextStyle::Glyph);
+    gfx.fill_round(
+        r,
+        6.0,
+        if st.hover || st.active {
+            CONTROL_HOVER
+        } else {
+            CONTROL
+        },
+    );
+    gfx.text(
+        value,
+        Rect::new(r.x, r.y, r.w - 20.0, r.h),
+        TEXT,
+        TextStyle::Value,
+    );
+    gfx.text(
+        "\u{E70D}",
+        Rect::new(r.x + r.w - 26.0, r.y, 20.0, r.h),
+        MUTED,
+        TextStyle::Glyph,
+    );
 }
 
 /// 色見本。押すと色の選択パネルが開く。
 pub fn swatch(gfx: &Gfx, r: Rect, color: Color, st: State) {
-    gfx.fill_round(r, 6.0, if st.hover || st.active { ACCENT } else { BORDER });
+    gfx.fill_round(
+        r,
+        6.0,
+        if st.hover || st.active {
+            ACCENT
+        } else {
+            BORDER
+        },
+    );
     gfx.fill_round(r.inset(2.0, 2.0), 4.5, color);
 }
 
@@ -142,12 +194,24 @@ pub fn item_button(
 ) {
     const ICON: f32 = 20.0;
     let bg = s.background_color;
-    gfx.fill_round(r, 5.0, Color::rgba(bg.0, bg.1, bg.2, 255).with_alpha(s.background_alpha() * opacity));
+    gfx.fill_round(
+        r,
+        5.0,
+        Color::rgba(bg.0, bg.1, bg.2, 255).with_alpha(s.background_alpha() * opacity),
+    );
     if let Some(b) = icon {
-        gfx.bitmap(b, Rect::new(r.x + 8.0, r.y + (r.h - ICON) / 2.0, ICON, ICON), opacity);
+        gfx.bitmap(
+            b,
+            Rect::new(r.x + 8.0, r.y + (r.h - ICON) / 2.0, ICON, ICON),
+            opacity,
+        );
     }
     let tc = s.text_color;
-    let style = if s.bold_text { TextStyle::ItemBold } else { TextStyle::Item };
+    let style = if s.bold_text {
+        TextStyle::ItemBold
+    } else {
+        TextStyle::Item
+    };
     gfx.text(
         name,
         Rect::new(r.x + 36.0, r.y, (r.w - 44.0).max(0.0), r.h),
@@ -156,7 +220,11 @@ pub fn item_button(
     );
     if hovered {
         // 明るい輪郭と薄い白の重ねで、背景の明暗によらず識別できるようにする
-        gfx.fill_round(r, 5.0, Color::rgba(0xFF, 0xFF, 0xFF, 0x24).with_alpha(0x24 as f32 / 255.0 * opacity));
+        gfx.fill_round(
+            r,
+            5.0,
+            Color::rgba(0xFF, 0xFF, 0xFF, 0x24).with_alpha(0x24 as f32 / 255.0 * opacity),
+        );
         gfx.stroke_round(r, 5.0, ACCENT_HOVER.with_alpha(opacity), 2.0);
     }
 }

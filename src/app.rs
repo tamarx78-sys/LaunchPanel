@@ -8,17 +8,19 @@ use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap;
-use windows::Win32::Graphics::Dwm::{DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DwmSetWindowAttribute};
-use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint,
-    ValidateRect,
+use windows::Win32::Graphics::Dwm::{
+    DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DwmSetWindowAttribute,
 };
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY,
+    MONITORINFO, MonitorFromPoint, ValidateRect,
+};
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
 };
 use windows::Win32::UI::Shell::{DragFinish, DragQueryFileW, HDROP};
-use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
@@ -242,8 +244,14 @@ impl App {
         self.apply_look();
 
         let h = &self.settings.hotkey;
-        let modifiers = (h.ctrl as u32 * 2) | (h.alt as u32) | (h.shift as u32 * 4) | (h.win as u32 * 8);
-        let (tip, show, settings, exit) = (to_wide("LaunchPanel3"), to_wide("表示"), to_wide("設定"), to_wide("終了"));
+        let modifiers =
+            (h.ctrl as u32 * 2) | (h.alt as u32) | (h.shift as u32 * 4) | (h.win as u32 * 8);
+        let (tip, show, settings, exit) = (
+            to_wide("LaunchPanel"),
+            to_wide("表示"),
+            to_wide("設定"),
+            to_wide("終了"),
+        );
         let icon = to_wide("");
         // SAFETY: 文字列は呼び出し中有効。コールバックはプロセス終了まで有効
         let status = unsafe {
@@ -259,9 +267,14 @@ impl App {
             )
         };
         if status & 2 == 0 {
-            crate::log::write(&format!("ホットキーの登録に失敗しました: {modifiers:#x}+{} (他のアプリが使用中の可能性があります)", h.key));
+            crate::log::write(&format!(
+                "ホットキーの登録に失敗しました: {modifiers:#x}+{} (他のアプリが使用中の可能性があります)",
+                h.key
+            ));
         }
-        if self.settings.desktop_double_click && desktop::lp_desktop_start(on_desktop_double_click) == 0 {
+        if self.settings.desktop_double_click
+            && desktop::lp_desktop_start(on_desktop_double_click) == 0
+        {
             crate::log::write("デスクトップのダブルクリック監視を開始できませんでした。");
         }
         self.show();
@@ -282,7 +295,9 @@ impl App {
     fn apply_shadow(&self) {
         let w = &self.settings.window;
         // SAFETY: 自分のウィンドウへの影の設定
-        unsafe { shadow::lp_set_window_shadow(self.hwnd.0 as isize, w.shadow as i32, w.shadow_opacity) };
+        unsafe {
+            shadow::lp_set_window_shadow(self.hwnd.0 as isize, w.shadow as i32, w.shadow_opacity)
+        };
     }
 
     /// 従来の位置で復帰し、前面化して入力フォーカスを得る。
@@ -293,7 +308,11 @@ impl App {
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_SHOW);
             let ok = foreground::lp_force_foreground(self.hwnd.0 as isize) != 0;
-            crate::log::debug(&format!("表示: 前面化{} (前面={})", if ok { "成功" } else { "失敗" }, window_label(GetForegroundWindow())));
+            crate::log::debug(&format!(
+                "表示: 前面化{} (前面={})",
+                if ok { "成功" } else { "失敗" },
+                window_label(GetForegroundWindow())
+            ));
         }
         self.invalidate();
     }
@@ -310,14 +329,25 @@ impl App {
             let area = work_area(POINT { x, y }, MONITOR_DEFAULTTONEAREST);
             let x = x.min(area.right - w).max(area.left);
             let y = y.min(area.bottom - h).max(area.top);
-            let _ = SetWindowPos(self.hwnd, None, x, y, 0, 0, SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE);
+            let _ = SetWindowPos(
+                self.hwnd,
+                None,
+                x,
+                y,
+                0,
+                0,
+                SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
         }
         self.show();
     }
 
     fn hide(&self) {
         // SAFETY: 前面ウィンドウの参照
-        crate::log::debug(&format!("非表示 (前面={})", window_label(unsafe { GetForegroundWindow() })));
+        crate::log::debug(&format!(
+            "非表示 (前面={})",
+            window_label(unsafe { GetForegroundWindow() })
+        ));
         // SAFETY: 自分のウィンドウの非表示
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_HIDE);
@@ -335,10 +365,20 @@ impl App {
         if elapsed < RESTORE_GRACE {
             // 復帰直後のフォーカス遷移 (デスクトップのダブルクリックを Explorer が後から処理して
             // 前面を取り返す等) はフォーカス喪失と見なさない。猶予の終わりに前面を取り戻す
-            crate::log::debug(&format!("復帰直後に非アクティブ化 ({} ms)。猶予後に前面を取り戻す", elapsed.as_millis()));
+            crate::log::debug(&format!(
+                "復帰直後に非アクティブ化 ({} ms)。猶予後に前面を取り戻す",
+                elapsed.as_millis()
+            ));
             self.reclaim_focus = true;
             // SAFETY: タイマー設定
-            unsafe { SetTimer(Some(self.hwnd), TIMER_GRACE, (RESTORE_GRACE - elapsed).as_millis() as u32 + 1, None) };
+            unsafe {
+                SetTimer(
+                    Some(self.hwnd),
+                    TIMER_GRACE,
+                    (RESTORE_GRACE - elapsed).as_millis() as u32 + 1,
+                    None,
+                )
+            };
             return;
         }
         if std::mem::take(&mut self.reclaim_focus) {
@@ -346,7 +386,10 @@ impl App {
             unsafe {
                 if GetForegroundWindow() != self.hwnd {
                     let ok = foreground::lp_force_foreground(self.hwnd.0 as isize) != 0;
-                    crate::log::debug(&format!("猶予終了: 前面を取り戻す ({})", if ok { "成功" } else { "失敗" }));
+                    crate::log::debug(&format!(
+                        "猶予終了: 前面を取り戻す ({})",
+                        if ok { "成功" } else { "失敗" }
+                    ));
                 }
             }
             return;
@@ -378,11 +421,20 @@ impl App {
     }
 
     fn item_area(&self) -> Rect {
-        Rect::new(0.0, TOP_BAR, self.width, (self.height - TOP_BAR - FOOTER).max(0.0))
+        Rect::new(
+            0.0,
+            TOP_BAR,
+            self.width,
+            (self.height - TOP_BAR - FOOTER).max(0.0),
+        )
     }
 
     fn column_count(&self) -> usize {
-        layout::column_count(self.width as f64, self.settings.window.width, self.entries.len())
+        layout::column_count(
+            self.width as f64,
+            self.settings.window.width,
+            self.entries.len(),
+        )
     }
 
     /// 現在の幅から列数を決め、左列の上から下へ、次に右の列へ配置する。
@@ -409,7 +461,10 @@ impl App {
                     e.pos = target;
                 }
             }
-            self.slots.push((id, Rect::new(c as f32 * column_w, r as f32 * ROW_H, column_w, ROW_H)));
+            self.slots.push((
+                id,
+                Rect::new(c as f32 * column_w, r as f32 * ROW_H, column_w, ROW_H),
+            ));
             rows = rows.max(r + 1);
         }
         self.content_height = rows as f32 * ROW_H;
@@ -437,10 +492,12 @@ impl App {
 
     fn hit(&self, x: f32, y: f32) -> Hit {
         let (w, h) = (self.width, self.height);
-        let (on_left, on_right, on_top, on_bottom) = (x < EDGE, x >= w - EDGE, y < EDGE, y >= h - EDGE);
+        let (on_left, on_right, on_top, on_bottom) =
+            (x < EDGE, x >= w - EDGE, y < EDGE, y >= h - EDGE);
         if on_left || on_right || on_top || on_bottom {
             // 端の帯の上では、角から CORNER 以内を斜め方向として扱う (角は辺より広く掴める)
-            let (near_left, near_right, near_top, near_bottom) = (x < CORNER, x >= w - CORNER, y < CORNER, y >= h - CORNER);
+            let (near_left, near_right, near_top, near_bottom) =
+                (x < CORNER, x >= w - CORNER, y < CORNER, y >= h - CORNER);
             let horizontal_edge = on_top || on_bottom;
             let vertical_edge = on_left || on_right;
             let mut dir = 0;
@@ -489,18 +546,17 @@ impl App {
             self.update_resize();
             return;
         }
-        if let Some(p) = &self.press {
-            if self.drag.is_none()
-                && ((x - p.start.0).abs() >= DRAG_THRESHOLD || (y - p.start.1).abs() >= DRAG_THRESHOLD)
-            {
-                self.drag = Some(Drag {
-                    id: p.id,
-                    order: self.entries.iter().map(|e| e.id).collect(),
-                    pointer: (x, y),
-                    grab: p.grab,
-                });
-                self.hover = Hit::None;
-            }
+        if let Some(p) = &self.press
+            && self.drag.is_none()
+            && ((x - p.start.0).abs() >= DRAG_THRESHOLD || (y - p.start.1).abs() >= DRAG_THRESHOLD)
+        {
+            self.drag = Some(Drag {
+                id: p.id,
+                order: self.entries.iter().map(|e| e.id).collect(),
+                pointer: (x, y),
+                grab: p.grab,
+            });
+            self.hover = Hit::None;
         }
         if self.drag.is_some() {
             self.update_drag(x, y);
@@ -545,13 +601,22 @@ impl App {
                 // SAFETY: 自分のウィンドウへのメッセージ送信
                 unsafe {
                     let _ = ReleaseCapture();
-                    SendMessageW(self.hwnd, WM_NCLBUTTONDOWN, Some(WPARAM(HTCAPTION as usize)), Some(LPARAM(0)));
+                    SendMessageW(
+                        self.hwnd,
+                        WM_NCLBUTTONDOWN,
+                        Some(WPARAM(HTCAPTION as usize)),
+                        Some(LPARAM(0)),
+                    );
                 }
             }
             Hit::Item(id) => {
                 let Some(e) = self.entry(id) else { return };
                 let grab = (x - e.pos.0, y - (TOP_BAR + e.pos.1 - self.scroll));
-                self.press = Some(Press { id, start: (x, y), grab });
+                self.press = Some(Press {
+                    id,
+                    start: (x, y),
+                    grab,
+                });
                 // SAFETY: マウスキャプチャ
                 unsafe { SetCapture(self.hwnd) };
             }
@@ -581,13 +646,13 @@ impl App {
             unsafe {
                 let _ = ReleaseCapture();
             }
-            if self.hit(x, y) == Hit::Item(p.id) {
-                if let Some(e) = self.entry(p.id) {
-                    let path = e.item.path.clone();
-                    let name = e.item.name.clone();
-                    if !crate::services::launch(self.hwnd, &path) {
-                        self.show_footer(&format!("起動できません: {name}"));
-                    }
+            if self.hit(x, y) == Hit::Item(p.id)
+                && let Some(e) = self.entry(p.id)
+            {
+                let path = e.item.path.clone();
+                let name = e.item.name.clone();
+                if !crate::services::launch(self.hwnd, &path) {
+                    self.show_footer(&format!("起動できません: {name}"));
                 }
             }
             return;
@@ -614,13 +679,18 @@ impl App {
     }
 
     fn on_wheel(&mut self, delta: i16) {
-        self.scroll_target = (self.scroll_target - delta as f32 / 120.0 * ROW_H * 1.5).clamp(0.0, self.max_scroll());
+        self.scroll_target =
+            (self.scroll_target - delta as f32 / 120.0 * ROW_H * 1.5).clamp(0.0, self.max_scroll());
         self.invalidate();
     }
 
     fn on_right_up(&mut self, x: f32, y: f32) {
-        let Hit::Item(id) = self.hit(x, y) else { return };
-        let Some(index) = self.entries.iter().position(|e| e.id == id) else { return };
+        let Hit::Item(id) = self.hit(x, y) else {
+            return;
+        };
+        let Some(index) = self.entries.iter().position(|e| e.id == id) else {
+            return;
+        };
         let last = self.entries.len() - 1;
         let mut pt = POINT::default();
         // SAFETY: メニューは関数内で生成・破棄する
@@ -629,11 +699,29 @@ impl App {
             let _ = AppendMenuW(menu, MF_STRING, 1, w!("編集..."));
             let _ = AppendMenuW(menu, MF_STRING, 2, w!("削除"));
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-            let _ = AppendMenuW(menu, MF_STRING | if index == 0 { MF_GRAYED } else { MF_ENABLED }, 3, w!("上へ移動"));
-            let _ = AppendMenuW(menu, MF_STRING | if index == last { MF_GRAYED } else { MF_ENABLED }, 4, w!("下へ移動"));
+            let _ = AppendMenuW(
+                menu,
+                MF_STRING | if index == 0 { MF_GRAYED } else { MF_ENABLED },
+                3,
+                w!("上へ移動"),
+            );
+            let _ = AppendMenuW(
+                menu,
+                MF_STRING | if index == last { MF_GRAYED } else { MF_ENABLED },
+                4,
+                w!("下へ移動"),
+            );
             let _ = GetCursorPos(&mut pt);
             self.modal += 1;
-            let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, None, self.hwnd, None);
+            let cmd = TrackPopupMenu(
+                menu,
+                TPM_RETURNCMD | TPM_RIGHTBUTTON,
+                pt.x,
+                pt.y,
+                None,
+                self.hwnd,
+                None,
+            );
             self.modal -= 1;
             let _ = DestroyMenu(menu);
             cmd.0
@@ -641,11 +729,9 @@ impl App {
         match cmd {
             1 => self.open_edit(id),
             2 => self.delete_item(id),
-            3 | 4 => {
-                if items::move_by(&mut self.entries, index, if cmd == 3 { -1 } else { 1 }) {
-                    self.save();
-                    self.relayout(true);
-                }
+            3 | 4 if items::move_by(&mut self.entries, index, if cmd == 3 { -1 } else { 1 }) => {
+                self.save();
+                self.relayout(true);
             }
             _ => {}
         }
@@ -653,11 +739,19 @@ impl App {
 
     fn delete_item(&mut self, id: u64) {
         let Some(e) = self.entry(id) else { return };
-        let text = to_wide(&format!("「{}」を削除しますか？\n\n{}", e.item.name, e.item.path));
+        let text = to_wide(&format!(
+            "「{}」を削除しますか？\n\n{}",
+            e.item.name, e.item.path
+        ));
         self.modal += 1;
         // SAFETY: 文字列は呼び出し中有効
         let answer = unsafe {
-            MessageBoxW(Some(self.hwnd), PCWSTR(text.as_ptr()), w!("アイテムの削除"), MB_OKCANCEL | MB_ICONQUESTION)
+            MessageBoxW(
+                Some(self.hwnd),
+                PCWSTR(text.as_ptr()),
+                w!("アイテムの削除"),
+                MB_OKCANCEL | MB_ICONQUESTION,
+            )
         };
         self.modal -= 1;
         if answer == IDOK {
@@ -730,12 +824,20 @@ impl App {
         let Some(drag) = self.drag.take() else { return };
         self.press = None;
         let changed = drag.order != self.entries.iter().map(|e| e.id).collect::<Vec<_>>();
-        let floating = (drag.pointer.0 - drag.grab.0, drag.pointer.1 - drag.grab.1 - TOP_BAR + self.scroll);
+        let floating = (
+            drag.pointer.0 - drag.grab.0,
+            drag.pointer.1 - drag.grab.1 - TOP_BAR + self.scroll,
+        );
         if let Some(e) = self.entries.iter_mut().find(|e| e.id == drag.id) {
             e.pos = floating;
         }
         if changed {
-            self.entries.sort_by_key(|e| drag.order.iter().position(|&id| id == e.id).unwrap_or(usize::MAX));
+            self.entries.sort_by_key(|e| {
+                drag.order
+                    .iter()
+                    .position(|&id| id == e.id)
+                    .unwrap_or(usize::MAX)
+            });
             self.save();
         }
         self.relayout(true);
@@ -788,14 +890,27 @@ impl App {
         let target_px = (target_dip * scale).round() as i32;
         if target_px != w {
             // 左辺で操作した場合は右端を固定してスナップする
-            let x = if dir & DIR_LEFT != 0 { rc.right - target_px } else { rc.left };
+            let x = if dir & DIR_LEFT != 0 {
+                rc.right - target_px
+            } else {
+                rc.left
+            };
             // SAFETY: 自分のウィンドウのリサイズ
             unsafe {
-                let _ = SetWindowPos(self.hwnd, None, x, rc.top, target_px, h, SWP_NOZORDER | SWP_NOACTIVATE);
+                let _ = SetWindowPos(
+                    self.hwnd,
+                    None,
+                    x,
+                    rc.top,
+                    target_px,
+                    h,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
             }
         }
         self.settings.window.inner_width = Some(target_dip);
-        self.settings.window.inner_height = Some(((h as f64 / scale) * 100.0).round() / 100.0).map(|v| v.max(MIN_INNER_SIZE));
+        self.settings.window.inner_height =
+            Some(((h as f64 / scale) * 100.0).round() / 100.0).map(|v| v.max(MIN_INNER_SIZE));
         self.save();
     }
 
@@ -811,8 +926,12 @@ impl App {
 
     fn on_edit_closed(&mut self, ok: bool) {
         self.modal = self.modal.saturating_sub(1);
-        let Some(r) = crate::edit::take_result().filter(|_| ok) else { return };
-        let Some(e) = self.entries.iter_mut().find(|e| e.id == r.id) else { return };
+        let Some(r) = crate::edit::take_result().filter(|_| ok) else {
+            return;
+        };
+        let Some(e) = self.entries.iter_mut().find(|e| e.id == r.id) else {
+            return;
+        };
         let path_changed = e.item.path != r.path;
         e.item.name = r.name;
         e.item.path = r.path;
@@ -834,7 +953,8 @@ impl App {
         if self.settings_open {
             return;
         }
-        self.settings_open = crate::settings::open(self.hwnd, &self.settings, self.fallback.as_ref());
+        self.settings_open =
+            crate::settings::open(self.hwnd, &self.settings, self.fallback.as_ref());
         if self.settings_open {
             // 設定画面を操作している間は本体を自動非表示にしない
             self.modal += 1;
@@ -867,7 +987,10 @@ impl App {
                 self.entries.len(),
             );
             self.settings.window.inner_width = Some(width);
-            self.settings.window.inner_height.get_or_insert((self.height as f64 * 100.0).round() / 100.0);
+            self.settings
+                .window
+                .inner_height
+                .get_or_insert((self.height as f64 * 100.0).round() / 100.0);
             let mut rc = RECT::default();
             // SAFETY: 自分のウィンドウのリサイズ
             unsafe {
@@ -905,7 +1028,10 @@ impl App {
     // ───────────── 保存・通知 ─────────────
 
     fn save(&mut self) {
-        let config = Config { settings: self.settings.clone(), items: self.entries.iter().map(|e| e.item.clone()).collect() };
+        let config = Config {
+            settings: self.settings.clone(),
+            items: self.entries.iter().map(|e| e.item.clone()).collect(),
+        };
         if !self.store.save(&config) {
             self.show_footer("設定を保存できませんでした (LaunchPanel.log を参照)");
         }
@@ -980,11 +1106,20 @@ impl App {
         let gfx = &self.gfx;
 
         // 上部: サイズと列数、設定、ピン留め
-        let status = layout::status_text(self.width as f64, self.height as f64, self.column_count());
+        let status =
+            layout::status_text(self.width as f64, self.height as f64, self.column_count());
         let sw = gfx.measure_small(&status) + 16.0;
         gfx.fill_round(Rect::new(8.0, 8.0, sw, 24.0), 6.0, PILL);
-        gfx.text(&status, Rect::new(8.0, 8.0, sw, 24.0), OVERLAY_TEXT, TextStyle::Small);
-        for (rect, hit, glyph) in [(self.gear_rect(), Hit::Gear, "\u{E713}"), (self.pin_rect(), Hit::Pin, "")] {
+        gfx.text(
+            &status,
+            Rect::new(8.0, 8.0, sw, 24.0),
+            OVERLAY_TEXT,
+            TextStyle::Small,
+        );
+        for (rect, hit, glyph) in [
+            (self.gear_rect(), Hit::Gear, "\u{E713}"),
+            (self.pin_rect(), Hit::Pin, ""),
+        ] {
             gfx.fill_round(rect, 6.0, if self.hover == hit { PILL_HOVER } else { PILL });
             if hit == Hit::Pin {
                 // 未固定は傾いたピン、固定は直立したピン (色だけに頼らず向きで状態を示す)
@@ -992,7 +1127,12 @@ impl App {
                 if !self.pinned {
                     gfx.rotate(45.0, cx, cy);
                 }
-                gfx.text(if self.pinned { "\u{E840}" } else { "\u{E718}" }, rect, OVERLAY_TEXT, TextStyle::Glyph);
+                gfx.text(
+                    if self.pinned { "\u{E840}" } else { "\u{E718}" },
+                    rect,
+                    OVERLAY_TEXT,
+                    TextStyle::Glyph,
+                );
                 gfx.reset_transform();
             } else {
                 gfx.text(glyph, rect, OVERLAY_TEXT, TextStyle::Glyph);
@@ -1017,7 +1157,11 @@ impl App {
             let ratio = area.h / self.content_height;
             let bar_h = (area.h * ratio).max(24.0);
             let bar_y = area.y + (area.h - bar_h) * (self.scroll / self.max_scroll().max(1.0));
-            gfx.fill_round(Rect::new(self.width - 5.0, bar_y, 3.0, bar_h), 1.5, Color::rgba(255, 255, 255, 0x50));
+            gfx.fill_round(
+                Rect::new(self.width - 5.0, bar_y, 3.0, bar_h),
+                1.5,
+                Color::rgba(255, 255, 255, 0x50),
+            );
         }
         gfx.pop_clip();
 
@@ -1029,11 +1173,16 @@ impl App {
         gfx.text(footer, fr.inset(6.0, 0.0), OVERLAY_TEXT, TextStyle::Small);
 
         // ドラッグ中のボタン (掴んだ位置関係を保ってカーソルへ追従)
-        if let Some(d) = &self.drag {
-            if let Some(e) = self.entry(d.id) {
-                let r = Rect::new(d.pointer.0 - d.grab.0, d.pointer.1 - d.grab.1, e.width, BUTTON_H);
-                self.draw_button(e, r, true, 0.92);
-            }
+        if let Some(d) = &self.drag
+            && let Some(e) = self.entry(d.id)
+        {
+            let r = Rect::new(
+                d.pointer.0 - d.grab.0,
+                d.pointer.1 - d.grab.1,
+                e.width,
+                BUTTON_H,
+            );
+            self.draw_button(e, r, true, 0.92);
         }
         self.gfx.end();
 
@@ -1044,12 +1193,24 @@ impl App {
 
     fn draw_button(&self, e: &Entry, r: Rect, hovered: bool, opacity: f32) {
         // アイコンが取れなかったアイテムは LaunchPanel のアイコンで代用する
-        let icon = e.bitmap.as_ref().map(|(_, b)| b).or(if e.icon_failed || e.icon.is_none() {
-            self.fallback_bitmap.as_ref().map(|(_, b)| b)
-        } else {
-            None
-        });
-        crate::ui::item_button(&self.gfx, r, &e.item.name, icon, &self.settings.item_button, hovered, opacity);
+        let icon = e
+            .bitmap
+            .as_ref()
+            .map(|(_, b)| b)
+            .or(if e.icon_failed || e.icon.is_none() {
+                self.fallback_bitmap.as_ref().map(|(_, b)| b)
+            } else {
+                None
+            });
+        crate::ui::item_button(
+            &self.gfx,
+            r,
+            &e.item.name,
+            icon,
+            &self.settings.item_button,
+            hovered,
+            opacity,
+        );
     }
 
     /// レンダーターゲットの世代が変わったビットマップを作り直す。
@@ -1057,17 +1218,31 @@ impl App {
         let generation = self.gfx.generation;
         for e in &mut self.entries {
             if e.bitmap.as_ref().is_none_or(|(g, _)| *g != generation) {
-                e.bitmap = e.icon.as_ref().and_then(|p| self.gfx.create_bitmap(p)).map(|b| (generation, b));
+                e.bitmap = e
+                    .icon
+                    .as_ref()
+                    .and_then(|p| self.gfx.create_bitmap(p))
+                    .map(|b| (generation, b));
             }
         }
-        if self.fallback_bitmap.as_ref().is_none_or(|(g, _)| *g != generation) {
-            self.fallback_bitmap = self.fallback.as_ref().and_then(|p| self.gfx.create_bitmap(p)).map(|b| (generation, b));
+        if self
+            .fallback_bitmap
+            .as_ref()
+            .is_none_or(|(g, _)| *g != generation)
+        {
+            self.fallback_bitmap = self
+                .fallback
+                .as_ref()
+                .and_then(|p| self.gfx.create_bitmap(p))
+                .map(|b| (generation, b));
         }
     }
 
     /// 現在の背景の描き方 (設定画面の試し表示中は編集中の値)。
     fn look(&self) -> crate::appearance::Look {
-        self.preview_look.clone().unwrap_or_else(|| crate::appearance::Look::of(&self.settings))
+        self.preview_look
+            .clone()
+            .unwrap_or_else(|| crate::appearance::Look::of(&self.settings))
     }
 
     /// アクリルの有無を背景の設定に合わせ、描き直す。
@@ -1082,7 +1257,10 @@ impl App {
     pub fn handle(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
         let point = || {
             let s = self.scale();
-            ((lparam.0 & 0xFFFF) as i16 as f32 / s, ((lparam.0 >> 16) & 0xFFFF) as i16 as f32 / s)
+            (
+                (lparam.0 & 0xFFFF) as i16 as f32 / s,
+                ((lparam.0 >> 16) & 0xFFFF) as i16 as f32 / s,
+            )
         };
         match msg {
             WM_PAINT => {
@@ -1094,7 +1272,10 @@ impl App {
             }
             WM_ERASEBKGND => return Some(LRESULT(1)),
             WM_SIZE => {
-                let (w, h) = ((lparam.0 & 0xFFFF) as u32, ((lparam.0 >> 16) & 0xFFFF) as u32);
+                let (w, h) = (
+                    (lparam.0 & 0xFFFF) as u32,
+                    ((lparam.0 >> 16) & 0xFFFF) as u32,
+                );
                 self.gfx.resize(w, h);
                 let s = self.scale();
                 self.width = w as f32 / s;
@@ -1107,7 +1288,15 @@ impl App {
                 self.gfx.set_dpi((wparam.0 & 0xFFFF) as u32);
                 // SAFETY: 自分のウィンドウの移動
                 unsafe {
-                    let _ = SetWindowPos(self.hwnd, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
+                    let _ = SetWindowPos(
+                        self.hwnd,
+                        None,
+                        r.left,
+                        r.top,
+                        r.right - r.left,
+                        r.bottom - r.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
                 }
             }
             WM_SETCURSOR if (lparam.0 & 0xFFFF) as u32 == HTCLIENT => {
@@ -1121,10 +1310,20 @@ impl App {
                 let cursor = if self.drag.is_some() {
                     IDC_SIZEALL
                 } else {
-                    match self.resize.as_ref().map(|r| r.dir).map(Hit::Resize).unwrap_or(self.hit(pt.x as f32 / s, pt.y as f32 / s)) {
+                    match self
+                        .resize
+                        .as_ref()
+                        .map(|r| r.dir)
+                        .map(Hit::Resize)
+                        .unwrap_or(self.hit(pt.x as f32 / s, pt.y as f32 / s))
+                    {
                         Hit::Resize(d) if d == DIR_LEFT || d == DIR_RIGHT => IDC_SIZEWE,
                         Hit::Resize(d) if d == DIR_TOP || d == DIR_BOTTOM => IDC_SIZENS,
-                        Hit::Resize(d) if d == DIR_LEFT | DIR_TOP || d == DIR_RIGHT | DIR_BOTTOM => IDC_SIZENWSE,
+                        Hit::Resize(d)
+                            if d == DIR_LEFT | DIR_TOP || d == DIR_RIGHT | DIR_BOTTOM =>
+                        {
+                            IDC_SIZENWSE
+                        }
                         Hit::Resize(_) => IDC_SIZENESW,
                         _ => IDC_ARROW,
                     }
@@ -1250,7 +1449,10 @@ fn window_label(hwnd: HWND) -> String {
 
 /// モニターの作業領域 (物理座標)。
 fn work_area(pt: POINT, flags: windows::Win32::Graphics::Gdi::MONITOR_FROM_FLAGS) -> RECT {
-    let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
     // SAFETY: モニター情報の取得
     unsafe {
         let monitor = MonitorFromPoint(pt, flags);
@@ -1272,7 +1474,12 @@ fn post(msg: u32, wparam: usize, lparam: isize) {
     if hwnd != 0 {
         // SAFETY: メッセージの送信のみ (UI スレッドで処理される)
         unsafe {
-            let _ = PostMessageW(Some(HWND(hwnd as *mut _)), msg, WPARAM(wparam), LPARAM(lparam));
+            let _ = PostMessageW(
+                Some(HWND(hwnd as *mut _)),
+                msg,
+                WPARAM(wparam),
+                LPARAM(lparam),
+            );
         }
     }
 }

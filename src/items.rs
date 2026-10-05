@@ -13,7 +13,11 @@ pub fn default_name(path: &str) -> String {
             let host = rest.split(['/', '?', '#']).next().unwrap_or("");
             let host = host.rsplit('@').next().unwrap_or(host); // user:pass@ を除く
             let host = host.split(':').next().unwrap_or(host); // ポートを除く
-            return if host.is_empty() { trimmed.to_owned() } else { host.to_owned() };
+            return if host.is_empty() {
+                trimmed.to_owned()
+            } else {
+                host.to_owned()
+            };
         }
     }
     let without_trailing = trimmed.trim_end_matches(['\\', '/']);
@@ -40,7 +44,10 @@ pub fn add_paths(items: &mut Vec<Item>, paths: impl IntoIterator<Item = String>)
         if path.is_empty() || contains(items, path) {
             continue;
         }
-        items.push(Item { name: default_name(path), path: path.to_owned() });
+        items.push(Item {
+            name: default_name(path),
+            path: path.to_owned(),
+        });
         added += 1;
     }
     added
@@ -48,7 +55,9 @@ pub fn add_paths(items: &mut Vec<Item>, paths: impl IntoIterator<Item = String>)
 
 /// 隣接項目と入れ替える。端で移動できない場合は false。
 pub fn move_by<T>(items: &mut [T], index: usize, offset: isize) -> bool {
-    let Some(target) = index.checked_add_signed(offset) else { return false };
+    let Some(target) = index.checked_add_signed(offset) else {
+        return false;
+    };
     if index >= items.len() || target >= items.len() {
         return false;
     }
@@ -78,7 +87,10 @@ mod tests {
         assert_eq!(default_name(r"C:\Tools\app.exe"), "app.exe");
         assert_eq!(default_name(r"C:\Users\me\Documents\"), "Documents");
         assert_eq!(default_name(r"C:\"), r"C:\");
-        assert_eq!(default_name("https://www.example.com/path?q=1"), "www.example.com");
+        assert_eq!(
+            default_name("https://www.example.com/path?q=1"),
+            "www.example.com"
+        );
         assert_eq!(default_name("http://example.org"), "example.org");
         assert_eq!(default_name("https://example.org:8080/x"), "example.org");
         assert_eq!(default_name("notepad"), "notepad");
@@ -86,25 +98,42 @@ mod tests {
 
     #[test]
     fn add_skips_duplicates_ignoring_case() {
-        let mut items = vec![Item { name: "a".into(), path: r"C:\A.txt".into() }];
-        let added = add_paths(&mut items, [r"c:\a.txt", r"C:\B.txt", r"C:\B.txt"].map(String::from));
+        let mut items = vec![Item {
+            name: "a".into(),
+            path: r"C:\A.txt".into(),
+        }];
+        let added = add_paths(
+            &mut items,
+            [r"c:\a.txt", r"C:\B.txt", r"C:\B.txt"].map(String::from),
+        );
         assert_eq!(added, 1);
         assert_eq!(items[1].name, "B.txt");
     }
 
     #[test]
     fn move_ignores_ends() {
-        let mut items: Vec<Item> = "ABC".chars().map(|c| Item { name: c.into(), path: c.into() }).collect();
+        let mut items: Vec<Item> = "ABC"
+            .chars()
+            .map(|c| Item {
+                name: c.into(),
+                path: c.into(),
+            })
+            .collect();
         assert!(!move_by(&mut items, 0, -1));
         assert!(!move_by(&mut items, 2, 1));
         assert!(move_by(&mut items, 0, 1));
-        assert_eq!(items.iter().map(|i| i.name.as_str()).collect::<String>(), "BAC");
+        assert_eq!(
+            items.iter().map(|i| i.name.as_str()).collect::<String>(),
+            "BAC"
+        );
     }
 
     #[test]
     fn reorder_inserts_before_or_after() {
         let run = |order: &str, d: char, t: char, after: bool| {
-            reorder(&order.chars().collect::<Vec<_>>(), d, t, after).into_iter().collect::<String>()
+            reorder(&order.chars().collect::<Vec<_>>(), d, t, after)
+                .into_iter()
+                .collect::<String>()
         };
         assert_eq!(run("ABCDE", 'A', 'C', false), "BACDE");
         assert_eq!(run("ABCDE", 'A', 'C', true), "BCADE");

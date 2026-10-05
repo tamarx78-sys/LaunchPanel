@@ -43,11 +43,21 @@ impl Rect {
     }
 
     pub fn inset(&self, dx: f32, dy: f32) -> Self {
-        Self::new(self.x + dx, self.y + dy, (self.w - 2.0 * dx).max(0.0), (self.h - 2.0 * dy).max(0.0))
+        Self::new(
+            self.x + dx,
+            self.y + dy,
+            (self.w - 2.0 * dx).max(0.0),
+            (self.h - 2.0 * dy).max(0.0),
+        )
     }
 
     fn d2d(&self) -> D2D_RECT_F {
-        D2D_RECT_F { left: self.x, top: self.y, right: self.x + self.w, bottom: self.y + self.h }
+        D2D_RECT_F {
+            left: self.x,
+            top: self.y,
+            right: self.x + self.w,
+            bottom: self.y + self.h,
+        }
     }
 }
 
@@ -56,7 +66,12 @@ pub struct Color(pub f32, pub f32, pub f32, pub f32);
 
 impl Color {
     pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
-        Self(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0)
+        Self(
+            r as f32 / 255.0,
+            g as f32 / 255.0,
+            b as f32 / 255.0,
+            a as f32 / 255.0,
+        )
     }
 
     pub fn with_alpha(self, a: f32) -> Self {
@@ -64,7 +79,12 @@ impl Color {
     }
 
     fn d2d(self) -> D2D1_COLOR_F {
-        D2D1_COLOR_F { r: self.0, g: self.1, b: self.2, a: self.3 }
+        D2D1_COLOR_F {
+            r: self.0,
+            g: self.1,
+            b: self.2,
+            a: self.3,
+        }
     }
 }
 
@@ -111,7 +131,8 @@ impl Gfx {
         unsafe {
             let d2d: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
             let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
-            let wic: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
+            let wic: IWICImagingFactory =
+                CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
 
             let ui = w!("Segoe UI");
             let (left, center) = (DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -123,15 +144,27 @@ impl Gfx {
             } else {
                 w!("Segoe MDL2 Assets")
             };
-            let glyph = text_format(&dwrite, glyph_family, DWRITE_FONT_WEIGHT_NORMAL, 14.0, center, false)?;
-            let heading = text_format(&dwrite, ui, DWRITE_FONT_WEIGHT_SEMI_BOLD, 17.0, left, false)?;
+            let glyph = text_format(
+                &dwrite,
+                glyph_family,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                14.0,
+                center,
+                false,
+            )?;
+            let heading =
+                text_format(&dwrite, ui, DWRITE_FONT_WEIGHT_SEMI_BOLD, 17.0, left, false)?;
             let label = text_format(&dwrite, ui, DWRITE_FONT_WEIGHT_NORMAL, 13.0, left, false)?;
             let value = text_format(&dwrite, ui, DWRITE_FONT_WEIGHT_NORMAL, 13.0, center, false)?;
             let caption = text_format(&dwrite, ui, DWRITE_FONT_WEIGHT_NORMAL, 12.0, left, true)?;
             for f in [&item, &item_bold, &label, &value, &small] {
                 let sign = dwrite.CreateEllipsisTrimmingSign(f)?;
                 f.SetTrimming(
-                    &DWRITE_TRIMMING { granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER, delimiter: 0, delimiterCount: 0 },
+                    &DWRITE_TRIMMING {
+                        granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                        delimiter: 0,
+                        delimiterCount: 0,
+                    },
                     &sign,
                 )?;
             }
@@ -172,7 +205,10 @@ impl Gfx {
         let text: Vec<u16> = s.encode_utf16().collect();
         // SAFETY: テキストレイアウトの生成と計測のみ
         unsafe {
-            let Ok(layout) = self.dwrite.CreateTextLayout(&text, self.format(style), max_width, 10_000.0) else {
+            let Ok(layout) =
+                self.dwrite
+                    .CreateTextLayout(&text, self.format(style), max_width, 10_000.0)
+            else {
                 return (0.0, 0.0);
             };
             let mut m = DWRITE_TEXT_METRICS::default();
@@ -190,7 +226,12 @@ impl Gfx {
         unsafe {
             let decoder = self
                 .wic
-                .CreateDecoderFromFilename(PCWSTR(wide.as_ptr()), None, GENERIC_READ, WICDecodeMetadataCacheOnDemand)
+                .CreateDecoderFromFilename(
+                    PCWSTR(wide.as_ptr()),
+                    None,
+                    GENERIC_READ,
+                    WICDecodeMetadataCacheOnDemand,
+                )
                 .ok()?;
             let frame = decoder.GetFrame(0).ok()?;
             let (mut w, mut h) = (0, 0);
@@ -210,14 +251,20 @@ impl Gfx {
             GetClientRect(hwnd, &mut rc)?;
             let dpi = GetDpiForWindow(hwnd).max(96) as f32;
             let props = D2D1_RENDER_TARGET_PROPERTIES {
-                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
                 dpiX: dpi,
                 dpiY: dpi,
                 ..Default::default()
             };
             let hwnd_props = D2D1_HWND_RENDER_TARGET_PROPERTIES {
                 hwnd,
-                pixelSize: D2D_SIZE_U { width: (rc.right - rc.left) as u32, height: (rc.bottom - rc.top) as u32 },
+                pixelSize: D2D_SIZE_U {
+                    width: (rc.right - rc.left) as u32,
+                    height: (rc.bottom - rc.top) as u32,
+                },
                 presentOptions: D2D1_PRESENT_OPTIONS_NONE,
             };
             let target = self.d2d.CreateHwndRenderTarget(&props, &hwnd_props)?;
@@ -258,11 +305,11 @@ impl Gfx {
     pub fn end(&mut self) {
         if let Some(t) = &self.target {
             // SAFETY: 描画終了
-            if let Err(e) = unsafe { t.EndDraw(None, None) } {
-                if e.code() == D2DERR_RECREATE_TARGET {
-                    self.target = None;
-                    self.brush = None;
-                }
+            if let Err(e) = unsafe { t.EndDraw(None, None) }
+                && e.code() == D2DERR_RECREATE_TARGET
+            {
+                self.target = None;
+                self.brush = None;
             }
         }
     }
@@ -276,7 +323,11 @@ impl Gfx {
 
     pub fn fill_round(&self, r: Rect, radius: f32, color: Color) {
         if let (Some(t), Some(b)) = (&self.target, self.brush(color)) {
-            let rr = D2D1_ROUNDED_RECT { rect: r.d2d(), radiusX: radius, radiusY: radius };
+            let rr = D2D1_ROUNDED_RECT {
+                rect: r.d2d(),
+                radiusX: radius,
+                radiusY: radius,
+            };
             // SAFETY: 描画中のターゲットへの描画
             unsafe { t.FillRoundedRectangle(&rr, b) };
         }
@@ -292,7 +343,11 @@ impl Gfx {
     pub fn stroke_round(&self, r: Rect, radius: f32, color: Color, width: f32) {
         if let (Some(t), Some(b)) = (&self.target, self.brush(color)) {
             // 線の中心が矩形の内側に来るようにする
-            let rr = D2D1_ROUNDED_RECT { rect: r.inset(width / 2.0, width / 2.0).d2d(), radiusX: radius, radiusY: radius };
+            let rr = D2D1_ROUNDED_RECT {
+                rect: r.inset(width / 2.0, width / 2.0).d2d(),
+                radiusX: radius,
+                radiusY: radius,
+            };
             // SAFETY: 描画中のターゲットへの描画
             unsafe { t.DrawRoundedRectangle(&rr, b, width, None) };
         }
@@ -304,7 +359,14 @@ impl Gfx {
             let text: Vec<u16> = s.encode_utf16().collect();
             // SAFETY: 描画中のターゲットへの描画
             unsafe {
-                t.DrawText(&text, format, &r.d2d(), b, D2D1_DRAW_TEXT_OPTIONS_CLIP, DWRITE_MEASURING_MODE_NATURAL)
+                t.DrawText(
+                    &text,
+                    format,
+                    &r.d2d(),
+                    b,
+                    D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                )
             };
         }
     }
@@ -318,7 +380,14 @@ impl Gfx {
     pub fn rotate(&self, degrees: f32, cx: f32, cy: f32) {
         if let Some(t) = &self.target {
             let (s, c) = degrees.to_radians().sin_cos();
-            let m = Matrix3x2 { M11: c, M12: s, M21: -s, M22: c, M31: cx - c * cx + s * cy, M32: cy - s * cx - c * cy };
+            let m = Matrix3x2 {
+                M11: c,
+                M12: s,
+                M21: -s,
+                M22: c,
+                M31: cx - c * cx + s * cy,
+                M32: cy - s * cx - c * cy,
+            };
             // SAFETY: 変換行列の設定
             unsafe { t.SetTransform(&m) };
         }
@@ -349,7 +418,13 @@ impl Gfx {
         if let Some(t) = &self.target {
             // SAFETY: 描画中のターゲットへの描画
             unsafe {
-                t.DrawBitmap(bmp, Some(&r.d2d()), opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, None)
+                t.DrawBitmap(
+                    bmp,
+                    Some(&r.d2d()),
+                    opacity,
+                    D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                    None,
+                )
             };
         }
     }
@@ -371,7 +446,13 @@ impl Gfx {
                 right: (size.width + sw) / 2.0,
                 bottom: (size.height + sh) / 2.0,
             };
-            t.DrawBitmap(bmp, Some(&r.d2d()), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, Some(&src));
+            t.DrawBitmap(
+                bmp,
+                Some(&r.d2d()),
+                1.0,
+                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                Some(&src),
+            );
         }
     }
 
@@ -392,9 +473,25 @@ impl Gfx {
                 return;
             }
             let (kx, ky) = (dest.w / sw, dest.h / sh);
-            let d = Rect::new(dest.x + (x0 - sx) * kx, dest.y + (y0 - sy) * ky, (x1 - x0) * kx, (y1 - y0) * ky);
-            let s = D2D_RECT_F { left: x0, top: y0, right: x1, bottom: y1 };
-            t.DrawBitmap(bmp, Some(&d.d2d()), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, Some(&s));
+            let d = Rect::new(
+                dest.x + (x0 - sx) * kx,
+                dest.y + (y0 - sy) * ky,
+                (x1 - x0) * kx,
+                (y1 - y0) * ky,
+            );
+            let s = D2D_RECT_F {
+                left: x0,
+                top: y0,
+                right: x1,
+                bottom: y1,
+            };
+            t.DrawBitmap(
+                bmp,
+                Some(&d.d2d()),
+                1.0,
+                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                Some(&s),
+            );
         }
     }
 
@@ -402,14 +499,20 @@ impl Gfx {
     pub fn create_bitmap(&self, p: &Pixels) -> Option<ID2D1Bitmap> {
         let t = self.target.as_ref()?;
         let props = D2D1_BITMAP_PROPERTIES {
-            pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
             dpiX: 96.0,
             dpiY: 96.0,
         };
         // SAFETY: 画素バッファは width*height*4 バイト
         unsafe {
             t.CreateBitmap(
-                D2D_SIZE_U { width: p.width as u32, height: p.height as u32 },
+                D2D_SIZE_U {
+                    width: p.width as u32,
+                    height: p.height as u32,
+                },
                 Some(p.data.as_ptr() as *const c_void),
                 (p.width * 4) as u32,
                 &props,
@@ -426,12 +529,24 @@ impl Gfx {
         unsafe {
             let decoder = self
                 .wic
-                .CreateDecoderFromFilename(PCWSTR(wide.as_ptr()), None, GENERIC_READ, WICDecodeMetadataCacheOnDemand)
+                .CreateDecoderFromFilename(
+                    PCWSTR(wide.as_ptr()),
+                    None,
+                    GENERIC_READ,
+                    WICDecodeMetadataCacheOnDemand,
+                )
                 .ok()?;
             let frame = decoder.GetFrame(0).ok()?;
             let converter = self.wic.CreateFormatConverter().ok()?;
             converter
-                .Initialize(&frame, &GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, None, 0.0, WICBitmapPaletteTypeMedianCut)
+                .Initialize(
+                    &frame,
+                    &GUID_WICPixelFormat32bppPBGRA,
+                    WICBitmapDitherTypeNone,
+                    None,
+                    0.0,
+                    WICBitmapPaletteTypeMedianCut,
+                )
                 .ok()?;
             t.CreateBitmapFromWicBitmap(&converter, None).ok()
         }
@@ -448,7 +563,15 @@ unsafe fn text_format(
 ) -> Result<IDWriteTextFormat> {
     // SAFETY: テキスト書式の生成
     unsafe {
-        let f = dwrite.CreateTextFormat(family, None, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, w!("ja-jp"))?;
+        let f = dwrite.CreateTextFormat(
+            family,
+            None,
+            weight,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            size,
+            w!("ja-jp"),
+        )?;
         if wrap {
             // 折り返す文章は上揃え
             f.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)?;
@@ -466,11 +589,19 @@ fn has_font(dwrite: &IDWriteFactory, family: PCWSTR) -> bool {
     // SAFETY: システムフォントの検索のみ
     unsafe {
         let mut collection = None;
-        if dwrite.GetSystemFontCollection(&mut collection, false).is_err() {
+        if dwrite
+            .GetSystemFontCollection(&mut collection, false)
+            .is_err()
+        {
             return false;
         }
-        let Some(collection) = collection else { return false };
+        let Some(collection) = collection else {
+            return false;
+        };
         let (mut index, mut exists) = (0u32, windows::core::BOOL(0));
-        collection.FindFamilyName(family, &mut index, &mut exists).is_ok() && exists.as_bool()
+        collection
+            .FindFamilyName(family, &mut index, &mut exists)
+            .is_ok()
+            && exists.as_bool()
     }
 }

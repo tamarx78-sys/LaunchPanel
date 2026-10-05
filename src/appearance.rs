@@ -6,10 +6,12 @@
 
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap;
-use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow};
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+};
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
-use windows::core::{s, w};
 use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+use windows::core::{s, w};
 
 use crate::backdrop::{self, BLUR_LIMIT, WallpaperCanvas};
 use crate::config::{Backdrop, Settings};
@@ -27,7 +29,12 @@ pub struct Look {
 
 impl Look {
     pub fn of(s: &Settings) -> Self {
-        Self { image: s.background_image.trim().to_owned(), backdrop: s.backdrop, blur: s.blur, tint: s.tint }
+        Self {
+            image: s.background_image.trim().to_owned(),
+            backdrop: s.backdrop,
+            blur: s.blur,
+            tint: s.tint,
+        }
     }
 
     fn wants_acrylic(&self) -> bool {
@@ -70,7 +77,11 @@ impl BackdropView {
 
     /// 描画開始時の塗り色。アクリル中は透明にして DWM の背景を見せる。
     pub fn clear_color(&self) -> Color {
-        if self.acrylic { Color(0.0, 0.0, 0.0, 0.0) } else { SOLID }
+        if self.acrylic {
+            Color(0.0, 0.0, 0.0, 0.0)
+        } else {
+            SOLID
+        }
     }
 
     /// 壁紙・ディスプレイ構成が変わったら作り直させる。
@@ -81,7 +92,9 @@ impl BackdropView {
 
     /// 背景が壁紙ぼかしか (ウィンドウを動かしたら描き直しが必要か)。
     pub fn follows_position(&self, look: &Look) -> bool {
-        look.image.is_empty() && (look.backdrop == Backdrop::Wallpaper || (look.backdrop == Backdrop::Acrylic && !self.acrylic))
+        look.image.is_empty()
+            && (look.backdrop == Backdrop::Wallpaper
+                || (look.backdrop == Backdrop::Acrylic && !self.acrylic))
     }
 
     pub fn draw(&mut self, gfx: &Gfx, hwnd: HWND, look: &Look, full: Rect) {
@@ -99,13 +112,23 @@ impl BackdropView {
 
     fn image(&mut self, gfx: &Gfx, look: &Look) -> Option<ID2D1Bitmap> {
         let generation = gfx.generation;
-        let fresh = self.image_bitmap.as_ref().is_some_and(|(g, p, b, _)| *g == generation && *p == look.image && *b == look.blur);
+        let fresh = self
+            .image_bitmap
+            .as_ref()
+            .is_some_and(|(g, p, b, _)| *g == generation && *p == look.image && *b == look.blur);
         if !fresh {
             let bitmap = if look.blur == 0 {
                 gfx.load_image(&look.image)
             } else {
-                if self.image_source.as_ref().is_none_or(|(p, _)| *p != look.image) {
-                    self.image_source = Some((look.image.clone(), backdrop::decode_limited(&look.image, BLUR_LIMIT)));
+                if self
+                    .image_source
+                    .as_ref()
+                    .is_none_or(|(p, _)| *p != look.image)
+                {
+                    self.image_source = Some((
+                        look.image.clone(),
+                        backdrop::decode_limited(&look.image, BLUR_LIMIT),
+                    ));
                 }
                 let source = self.image_source.as_ref().and_then(|(_, s)| s.as_ref());
                 source.and_then(|s| gfx.create_bitmap(&backdrop::blurred(s, look.blur)))
@@ -115,12 +138,17 @@ impl BackdropView {
             }
             self.image_bitmap = Some((generation, look.image.clone(), look.blur, bitmap));
         }
-        self.image_bitmap.as_ref().and_then(|(_, _, _, b)| b.clone())
+        self.image_bitmap
+            .as_ref()
+            .and_then(|(_, _, _, b)| b.clone())
     }
 
     /// 壁紙のうち、ウィンドウの裏にあたる部分をぼかして描く。
     fn draw_wallpaper(&mut self, gfx: &Gfx, hwnd: HWND, blur: i32, full: Rect) {
-        let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
         let mut win = RECT::default();
         // SAFETY: モニターとウィンドウの矩形の取得
         unsafe {
@@ -132,7 +160,9 @@ impl BackdropView {
             self.wallpaper = backdrop::wallpaper_canvas(monitor, BLUR_LIMIT);
             self.wallpaper_bitmap = None;
         }
-        let Some(canvas) = &self.wallpaper else { return };
+        let Some(canvas) = &self.wallpaper else {
+            return;
+        };
         let generation = gfx.generation;
         let fresh = self
             .wallpaper_bitmap
@@ -141,9 +171,13 @@ impl BackdropView {
         if !fresh {
             let pixels = backdrop::blurred(&canvas.pixels, blur);
             let ratio = pixels.width as f32 / canvas.pixels.width as f32;
-            self.wallpaper_bitmap = gfx.create_bitmap(&pixels).map(|b| (generation, canvas.key.clone(), blur, b, ratio));
+            self.wallpaper_bitmap = gfx
+                .create_bitmap(&pixels)
+                .map(|b| (generation, canvas.key.clone(), blur, b, ratio));
         }
-        let Some((_, _, _, bitmap, ratio)) = &self.wallpaper_bitmap else { return };
+        let Some((_, _, _, bitmap, ratio)) = &self.wallpaper_bitmap else {
+            return;
+        };
 
         // ウィンドウの位置 (物理座標) → ビットマップ上の位置
         let f = canvas.factor * ratio;
@@ -181,11 +215,19 @@ fn set_accent(hwnd: HWND, acrylic: bool) -> bool {
 
     // SAFETY: user32 から関数を取り出して呼ぶ。構造体は呼び出し中有効
     unsafe {
-        let Ok(user32) = GetModuleHandleW(w!("user32.dll")) else { return false };
-        let Some(f) = GetProcAddress(user32, s!("SetWindowCompositionAttribute")) else { return false };
+        let Ok(user32) = GetModuleHandleW(w!("user32.dll")) else {
+            return false;
+        };
+        let Some(f) = GetProcAddress(user32, s!("SetWindowCompositionAttribute")) else {
+            return false;
+        };
         let set: SetWca = std::mem::transmute(f);
         let mut policy = AccentPolicy {
-            state: if acrylic { ACCENT_ENABLE_ACRYLICBLURBEHIND } else { ACCENT_DISABLED },
+            state: if acrylic {
+                ACCENT_ENABLE_ACRYLICBLURBEHIND
+            } else {
+                ACCENT_DISABLED
+            },
             flags: 0,
             gradient_color: 0x0118_1514,
             animation_id: 0,

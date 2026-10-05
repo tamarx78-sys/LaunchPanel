@@ -93,7 +93,11 @@ pub unsafe extern "system" fn lp_shell_start(
     let (tooltip, labels, icon_path) = unsafe {
         (
             from_ptr(tooltip),
-            [from_ptr(show_label), from_ptr(settings_label), from_ptr(exit_label)],
+            [
+                from_ptr(show_label),
+                from_ptr(settings_label),
+                from_ptr(exit_label),
+            ],
             from_ptr(icon_path),
         )
     };
@@ -219,7 +223,14 @@ unsafe fn load_icon(path: &str) -> HICON {
         if path.is_empty() {
             // exe に埋め込んだアプリのアイコン (リソース ID 1)
             let instance = GetModuleHandleW(None).unwrap_or_default();
-            if let Ok(h) = LoadImageW(Some(instance.into()), PCWSTR(1 as _), IMAGE_ICON, size, size, LR_DEFAULTCOLOR) {
+            if let Ok(h) = LoadImageW(
+                Some(instance.into()),
+                PCWSTR(1 as _),
+                IMAGE_ICON,
+                size,
+                size,
+                LR_DEFAULTCOLOR,
+            ) {
                 return HICON(h.0);
             }
         } else {
@@ -322,7 +333,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 LRESULT(0)
             }
             _ => {
-                let taskbar_created = STATE.with(|s| s.borrow().as_ref().map_or(0, |st| st.taskbar_created));
+                let taskbar_created =
+                    STATE.with(|s| s.borrow().as_ref().map_or(0, |st| st.taskbar_created));
                 if taskbar_created != 0 && msg == taskbar_created {
                     // Explorer 再起動後にトレイアイコンを再登録する
                     add_tray_icon(hwnd);

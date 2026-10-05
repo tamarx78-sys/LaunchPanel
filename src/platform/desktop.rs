@@ -6,6 +6,7 @@
 //! - 判定スレッド: 候補の2点がどちらも Explorer の実デスクトップの空白 (アイコン・ラベル上でない) かを
 //!   調べ、空白ならコールバックで通知する。クリック先は WindowFromPoint で求めるので、
 //!   透明なオーバーレイがデスクトップを覆っていても実デスクトップを基準に判定できる。
+//!   アイコン・ラベルの位置は UI Automation で調べる (他プロセスのメモリには触れない)。
 //!
 //! 2回目の押下ではなく、その後の解放で通知する。押下時点で前面化すると、続く解放で Explorer が
 //! 前面に戻り、ランチャーがすぐ自動非表示になってしまうため。
@@ -13,27 +14,23 @@
 //! 空白判定はクリックのたびにウィンドウを探し直すので、Explorer 再起動後も再設定は要らない。
 
 use std::cell::RefCell;
-use std::ffi::c_void;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
-use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, POINT, WPARAM};
-use windows::Win32::Graphics::Gdi::ScreenToClient;
-use windows::Win32::System::Diagnostics::Debug::{ReadProcessMemory, WriteProcessMemory};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Memory::{MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAllocEx, VirtualFreeEx};
-use windows::Win32::System::Threading::{
-    GetCurrentThreadId, OpenProcess, PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE,
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::System::Com::{
+    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
 };
-use windows::Win32::UI::Controls::{LVHITTESTINFO, LVM_HITTEST};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::UI::Accessibility::{
+    CUIAutomation, IUIAutomation, TreeScope_Children, UIA_BoundingRectanglePropertyId,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
-
-/// LVHT_ONITEMICON | LVHT_ONITEMLABEL | LVHT_ONITEMSTATEICON
-const LVHT_ONITEM: u32 = 0x0002 | 0x0004 | 0x0008;
 
 type ClickCallback = extern "system" fn(x: i32, y: i32);
 
@@ -85,6 +82,8 @@ pub extern "system" fn lp_desktop_start(callback: ClickCallback) -> i32 {
                 windows::Win32::UI::HiDpi::SetThreadDpiAwarenessContext(
                     windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
                 );
+                // UI Automation のための COM 初期化
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
             }
             for c in rx {
                 if is_desktop_blank(c.first) && is_desktop_blank(c.second) {
@@ -102,7 +101,11 @@ pub extern "system" fn lp_desktop_start(callback: ClickCallback) -> i32 {
 
     match ready_rx.recv() {
         Ok(Some(thread_id)) => {
-            *running = Some(Running { hook_thread_id: thread_id, hook_thread, worker });
+            *running = Some(Running {
+                hook_thread_id: thread_id,
+                hook_thread,
+                worker,
+            });
             1
         }
         _ => {
@@ -115,7 +118,9 @@ pub extern "system" fn lp_desktop_start(callback: ClickCallback) -> i32 {
 
 /// 監視を停止する。
 pub extern "system" fn lp_desktop_stop() {
-    let Some(running) = RUNNING.lock().unwrap_or_else(|e| e.into_inner()).take() else { return };
+    let Some(running) = RUNNING.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+        return;
+    };
     // SAFETY: 自分で作ったスレッドへの終了要求
     unsafe {
         let _ = PostThreadMessageW(running.hook_thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
@@ -190,15 +195,17 @@ fn on_mouse(msg: u32, pt: POINT, time: u32) {
             }
             WM_MOUSEMOVE => {
                 // クリック間に許容範囲を超えて動いたらダブルクリックとして扱わない
-                if s.first.is_some_and(|(first, _)| !within_tolerance(first, pt)) {
+                if s.first
+                    .is_some_and(|(first, _)| !within_tolerance(first, pt))
+                {
                     s.first = None;
                 }
             }
             WM_LBUTTONUP => {
-                if let Some(candidate) = s.armed.take() {
-                    if let Some(sender) = &s.sender {
-                        let _ = sender.send(candidate);
-                    }
+                if let Some(candidate) = s.armed.take()
+                    && let Some(sender) = &s.sender
+                {
+                    let _ = sender.send(candidate);
                 }
             }
             WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN => {
@@ -213,7 +220,12 @@ fn on_mouse(msg: u32, pt: POINT, time: u32) {
 /// システム設定のダブルクリック許容矩形 (クリック位置を中心とした幅・高さ) に収まるか。
 fn within_tolerance(a: POINT, b: POINT) -> bool {
     // SAFETY: システム設定の参照のみ
-    let (cx, cy) = unsafe { (GetSystemMetrics(SM_CXDOUBLECLK), GetSystemMetrics(SM_CYDOUBLECLK)) };
+    let (cx, cy) = unsafe {
+        (
+            GetSystemMetrics(SM_CXDOUBLECLK),
+            GetSystemMetrics(SM_CYDOUBLECLK),
+        )
+    };
     (a.x - b.x).abs() <= cx / 2 && (a.y - b.y).abs() <= cy / 2
 }
 
@@ -222,7 +234,9 @@ fn within_tolerance(a: POINT, b: POINT) -> bool {
 /// `pt` (物理スクリーン座標) が Explorer の実デスクトップの空白部分か。
 /// 判定できない場合は発火させない側 (false) に倒す。
 fn is_desktop_blank(pt: POINT) -> bool {
-    let Some(top) = top_level_at(pt) else { return false };
+    let Some(top) = top_level_at(pt) else {
+        return false;
+    };
     let class = class_name(top);
     if class != "Progman" && class != "WorkerW" {
         return false;
@@ -262,7 +276,8 @@ fn top_level_at(pt: POINT) -> Option<HWND> {
 fn desktop_listview(top: HWND) -> Option<HWND> {
     // SAFETY: ウィンドウ検索のみ
     unsafe {
-        let mut defview = FindWindowExW(Some(top), None, w!("SHELLDLL_DefView"), PCWSTR::null()).ok();
+        let mut defview =
+            FindWindowExW(Some(top), None, w!("SHELLDLL_DefView"), PCWSTR::null()).ok();
         if defview.is_none() {
             let mut found: Option<HWND> = None;
             let _ = EnumWindows(Some(find_defview), LPARAM(&mut found as *mut _ as isize));
@@ -275,7 +290,8 @@ fn desktop_listview(top: HWND) -> Option<HWND> {
 unsafe extern "system" fn find_defview(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {
     // SAFETY: lparam は desktop_listview の Option<HWND> を指す
     unsafe {
-        if let Ok(defview) = FindWindowExW(Some(hwnd), None, w!("SHELLDLL_DefView"), PCWSTR::null()) {
+        if let Ok(defview) = FindWindowExW(Some(hwnd), None, w!("SHELLDLL_DefView"), PCWSTR::null())
+        {
             *(lparam.0 as *mut Option<HWND>) = Some(defview);
             return false.into();
         }
@@ -283,48 +299,45 @@ unsafe extern "system" fn find_defview(hwnd: HWND, lparam: LPARAM) -> windows::c
     true.into()
 }
 
-/// デスクトップの ListView に LVM_HITTEST を送り、アイコンまたはラベル上なら Some(true)。
-/// LVHITTESTINFO は Explorer のプロセス内に置く必要があるので、そこへ確保して読み書きする。
+/// デスクトップのアイコン一覧の項目 (アイコンとラベル) の上なら Some(true)、空白なら Some(false)。
+///
+/// UI Automation で一覧の子要素 (各アイコン) の外接矩形をまとめて取得して判定する。
+/// 他プロセスのメモリへ書き込む方法 (LVM_HITTEST) は、ウイルス対策ソフトにプロセスへの注入と
+/// 誤判定されやすいので使わない。オーバーレイの UIA 要素に惑わされないよう、点からの要素検索
+/// (ElementFromPoint) ではなく、WindowFromPoint で確かめた一覧そのものから子要素をたどる。
 fn hit_item(listview: HWND, pt: POINT) -> Option<bool> {
-    // SAFETY: Explorer プロセスへの小さな確保と読み書き。確保した領域とハンドルは必ず解放する
-    unsafe {
-        let mut client = pt;
-        if !ScreenToClient(listview, &mut client).as_bool() {
-            return None;
-        }
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(listview, Some(&mut pid));
-        let process = OpenProcess(PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE, false, pid).ok()?;
+    let rects = item_rects(listview)?;
+    Some(
+        rects
+            .iter()
+            .any(|r| pt.x >= r.left && pt.x < r.right && pt.y >= r.top && pt.y < r.bottom),
+    )
+}
 
-        let size = size_of::<LVHITTESTINFO>();
-        let remote = VirtualAllocEx(process, None, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-        let result = if remote.is_null() {
-            None
-        } else {
-            let mut info = LVHITTESTINFO { pt: client, ..Default::default() };
-            let mut hit = None;
-            if WriteProcessMemory(process, remote, &info as *const _ as *const c_void, size, None).is_ok() {
-                let mut ret = 0usize;
-                let sent = SendMessageTimeoutW(
-                    listview,
-                    LVM_HITTEST,
-                    WPARAM(0),
-                    LPARAM(remote as isize),
-                    SMTO_ABORTIFHUNG,
-                    200,
-                    Some(&mut ret),
-                );
-                if sent.0 != 0
-                    && ReadProcessMemory(process, remote, &mut info as *mut _ as *mut c_void, size, None).is_ok()
-                {
-                    hit = Some(info.iItem >= 0 && info.flags.0 & LVHT_ONITEM != 0);
-                }
+/// 一覧の各項目の外接矩形 (物理スクリーン座標)。1 回の問い合わせでまとめて取得する。
+fn item_rects(listview: HWND) -> Option<Vec<RECT>> {
+    // SAFETY: UI Automation の呼び出し (COM はこのスレッドで初期化済み)
+    unsafe {
+        let uia: IUIAutomation =
+            CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()?;
+        let element = uia.ElementFromHandle(listview).ok()?;
+        let request = uia.CreateCacheRequest().ok()?;
+        request.AddProperty(UIA_BoundingRectanglePropertyId).ok()?;
+        let condition = uia.CreateTrueCondition().ok()?;
+        let items = element
+            .FindAllBuildCache(TreeScope_Children, &condition, &request)
+            .ok()?;
+        let count = items.Length().ok()?;
+        let mut rects = Vec::with_capacity(count.max(0) as usize);
+        for i in 0..count {
+            if let Ok(r) = items
+                .GetElement(i)
+                .and_then(|e| e.CachedBoundingRectangle())
+            {
+                rects.push(r);
             }
-            let _ = VirtualFreeEx(process, remote, 0, MEM_RELEASE);
-            hit
-        };
-        let _ = CloseHandle(process);
-        result
+        }
+        Some(rects)
     }
 }
 
@@ -341,7 +354,12 @@ mod tests {
 
     fn feed(events: &[(u32, i32, i32, u32)]) -> Vec<(i32, i32)> {
         let (tx, rx) = mpsc::channel();
-        STATE.with(|s| *s.borrow_mut() = ClickState { sender: Some(tx), ..Default::default() });
+        STATE.with(|s| {
+            *s.borrow_mut() = ClickState {
+                sender: Some(tx),
+                ..Default::default()
+            }
+        });
         for &(msg, x, y, t) in events {
             on_mouse(msg, POINT { x, y }, t);
         }
@@ -420,59 +438,60 @@ mod tests {
 #[cfg(test)]
 mod live_tests {
     use super::*;
-    use windows::Win32::Foundation::RECT;
-    use windows::Win32::Graphics::Gdi::ClientToScreen;
-    use windows::Win32::UI::Controls::{LVIR_BOUNDS, LVM_GETITEMCOUNT, LVM_GETITEMRECT};
-
-    /// アイコン0番の外接矩形 (スクリーン座標) を Explorer のプロセス経由で取得する。
-    fn item_rect(listview: HWND, index: usize) -> Option<RECT> {
-        unsafe {
-            let mut pid = 0u32;
-            GetWindowThreadProcessId(listview, Some(&mut pid));
-            let process = OpenProcess(PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE, false, pid).ok()?;
-            let size = size_of::<RECT>();
-            let remote = VirtualAllocEx(process, None, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-            let mut rect = RECT { left: LVIR_BOUNDS as i32, ..Default::default() };
-            WriteProcessMemory(process, remote, &rect as *const _ as *const c_void, size, None).ok()?;
-            SendMessageW(listview, LVM_GETITEMRECT, Some(WPARAM(index)), Some(LPARAM(remote as isize)));
-            ReadProcessMemory(process, remote, &mut rect as *mut _ as *mut c_void, size, None).ok()?;
-            let _ = VirtualFreeEx(process, remote, 0, MEM_RELEASE);
-            let _ = CloseHandle(process);
-            let mut tl = POINT { x: rect.left, y: rect.top };
-            let mut br = POINT { x: rect.right, y: rect.bottom };
-            let _ = ClientToScreen(listview, &mut tl);
-            let _ = ClientToScreen(listview, &mut br);
-            Some(RECT { left: tl.x, top: tl.y, right: br.x, bottom: br.y })
-        }
-    }
+    use windows::Win32::UI::Controls::LVM_GETITEMCOUNT;
 
     #[test]
     #[ignore]
     fn hit_test_against_real_desktop() {
         // アプリ本体と同じく Per-Monitor V2 で座標を扱う
         unsafe {
-            windows::Win32::UI::HiDpi::SetThreadDpiAwarenessContext(windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            windows::Win32::UI::HiDpi::SetThreadDpiAwarenessContext(
+                windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            );
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         }
         let progman = unsafe { FindWindowW(w!("Progman"), PCWSTR::null()) }.expect("Progman");
         let listview = desktop_listview(progman).expect("desktop listview");
         let count = unsafe { SendMessageW(listview, LVM_GETITEMCOUNT, None, None) }.0 as usize;
-        println!("listview={listview:?} items={count}");
+        let rects = item_rects(listview).expect("UI Automation でアイコンの位置を取得できる");
+        println!(
+            "listview={listview:?} items={count} uia_rects={}",
+            rects.len()
+        );
         assert!(count > 0, "デスクトップにアイコンが無いと検証できない");
+        assert_eq!(rects.len(), count, "UIA の項目数が ListView と一致する");
 
-        let r = item_rect(listview, 0).expect("item rect");
-        let center = POINT { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 };
-        let label = POINT { x: center.x, y: r.bottom - 4 };
-        println!("item0 rect={r:?} center={:?} label={:?}", hit_item(listview, center), hit_item(listview, label));
+        let r = rects[0];
+        let center = POINT {
+            x: (r.left + r.right) / 2,
+            y: (r.top + r.bottom) / 2,
+        };
+        let label = POINT {
+            x: center.x,
+            y: r.bottom - 4,
+        };
+        println!("item0 rect={r:?}");
         assert_eq!(hit_item(listview, center), Some(true), "アイコン上");
         assert_eq!(hit_item(listview, label), Some(true), "ラベル上");
 
         // 全アイコンの外側にある点を探して空白判定を確認する
-        let rects: Vec<RECT> = (0..count).filter_map(|i| item_rect(listview, i)).collect();
         let mut lv = RECT::default();
         unsafe { GetWindowRect(listview, &mut lv).unwrap() };
         let blank = (0..40)
-            .flat_map(|i| (0..40).map(move |j| POINT { x: lv.right - 30 - i * 40, y: lv.bottom - 30 - j * 40 }))
-            .find(|p| rects.iter().all(|r| p.x < r.left - 10 || p.x > r.right + 10 || p.y < r.top - 10 || p.y > r.bottom + 10))
+            .flat_map(|i| {
+                (0..40).map(move |j| POINT {
+                    x: lv.right - 30 - i * 40,
+                    y: lv.bottom - 30 - j * 40,
+                })
+            })
+            .find(|p| {
+                rects.iter().all(|r| {
+                    p.x < r.left - 10
+                        || p.x > r.right + 10
+                        || p.y < r.top - 10
+                        || p.y > r.bottom + 10
+                })
+            })
             .expect("blank point");
         println!("blank point={blank:?}");
         assert_eq!(hit_item(listview, blank), Some(false), "空白");
@@ -489,23 +508,40 @@ mod diagnose {
     #[ignore]
     fn windows_at_point() {
         unsafe {
-            windows::Win32::UI::HiDpi::SetThreadDpiAwarenessContext(windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            windows::Win32::UI::HiDpi::SetThreadDpiAwarenessContext(
+                windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            );
         }
-        let x = std::env::var("LP_X").map(|v| v.parse().unwrap()).unwrap_or(1000);
-        let y = std::env::var("LP_Y").map(|v| v.parse().unwrap()).unwrap_or(1000);
+        let x = std::env::var("LP_X")
+            .map(|v| v.parse().unwrap())
+            .unwrap_or(1000);
+        let y = std::env::var("LP_Y")
+            .map(|v| v.parse().unwrap())
+            .unwrap_or(1000);
         let pt = POINT { x, y };
-        println!("point={pt:?} top_level_at={:?} blank={}", top_level_at(pt).map(class_name), is_desktop_blank(pt));
+        println!(
+            "point={pt:?} top_level_at={:?} blank={}",
+            top_level_at(pt).map(class_name),
+            is_desktop_blank(pt)
+        );
         unsafe {
             let h = WindowFromPoint(pt);
             let root = GetAncestor(h, GA_ROOT);
-            println!("WindowFromPoint={} root={}", class_name(h), class_name(root));
+            println!(
+                "WindowFromPoint={} root={}",
+                class_name(h),
+                class_name(root)
+            );
         }
         unsafe {
             let mut hwnd = GetTopWindow(None).unwrap();
             loop {
                 let mut rect = RECT::default();
                 let _ = GetWindowRect(hwnd, &mut rect);
-                let inside = pt.x >= rect.left && pt.x < rect.right && pt.y >= rect.top && pt.y < rect.bottom;
+                let inside = pt.x >= rect.left
+                    && pt.x < rect.right
+                    && pt.y >= rect.top
+                    && pt.y < rect.bottom;
                 if IsWindowVisible(hwnd).as_bool() && inside {
                     let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
                     let mut title = [0u16; 128];
@@ -517,10 +553,15 @@ mod diagnose {
                         hwnd.0,
                         class_name(hwnd),
                         String::from_utf16_lossy(&title[..n]),
-                                        );
-                    if class_name(hwnd) == "Progman" { break; }
+                    );
+                    if class_name(hwnd) == "Progman" {
+                        break;
+                    }
                 }
-                match GetWindow(hwnd, GW_HWNDNEXT) { Ok(h) => hwnd = h, Err(_) => break }
+                match GetWindow(hwnd, GW_HWNDNEXT) {
+                    Ok(h) => hwnd = h,
+                    Err(_) => break,
+                }
             }
         }
     }

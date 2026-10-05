@@ -5,15 +5,14 @@
 //! プロセス」に前面化を許すので、移動量 0 のマウス入力を自分で送ってから前面化する。
 //! この入力は何も動かさず、デスクトップのダブルクリック検出も注入入力として無視する。
 //!
-//! 前面スレッドと入力状態を共有する方法 (AttachThreadInput) は、共有相手が Explorer の
-//! デスクトップのスレッドだと活性化の状態が食い違い、別のウィンドウへ移っても WM_ACTIVATE が
-//! 届かず自動非表示が働かなくなるので、最後の手段としてだけ使う。
+//! 他スレッドと入力状態を共有する方法 (AttachThreadInput) は使わない。Explorer のデスクトップ
+//! 相手だと活性化の状態が食い違って自動非表示が壊れるうえ、ウイルス対策ソフトに不審な挙動と
+//! 見なされやすいため。
 
 use windows::Win32::Foundation::HWND;
-use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
-use windows::Win32::UI::Input::KeyboardAndMouse::{INPUT, INPUT_MOUSE, SendInput, SetActiveWindow, SetFocus};
+use windows::Win32::UI::Input::KeyboardAndMouse::{INPUT, INPUT_MOUSE, SendInput, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+    BringWindowToTop, GetForegroundWindow, SetForegroundWindow,
 };
 
 /// `hwnd` を前面化して入力フォーカスを与える。前面になれば 1。
@@ -29,32 +28,22 @@ pub unsafe extern "system" fn lp_force_foreground(hwnd: isize) -> i32 {
             return 1;
         }
         // 移動量 0 のマウス入力を送り、前面化の権利を得る
-        let input = INPUT { r#type: INPUT_MOUSE, ..Default::default() };
+        let input = INPUT {
+            r#type: INPUT_MOUSE,
+            ..Default::default()
+        };
         SendInput(&[input], size_of::<INPUT>() as i32);
-        if try_set(hwnd) {
-            crate::log::debug("前面化: 空のマウス入力で権利を得て成功");
-            return 1;
-        }
-        crate::log::debug("前面化: 入力状態の共有で再試行");
-
-        // 最後の手段: 前面スレッドと入力状態を一時的に共有する
-        let foreground = GetForegroundWindow();
-        let me = GetCurrentThreadId();
-        let other = GetWindowThreadProcessId(foreground, None);
-        let attached = other != 0 && other != me && AttachThreadInput(me, other, true).as_bool();
         let _ = BringWindowToTop(hwnd);
-        let _ = SetForegroundWindow(hwnd);
-        let _ = SetFocus(Some(hwnd));
-        if attached {
-            let _ = AttachThreadInput(me, other, false);
-        }
-        if GetForegroundWindow() == hwnd {
-            // 共有中の活性化は自スレッドに残らないことがあるので、今の権利でやり直す
-            let _ = SetForegroundWindow(hwnd);
-            let _ = SetActiveWindow(hwnd);
+        let ok = try_set(hwnd);
+        if ok {
             let _ = SetFocus(Some(hwnd));
         }
-        (GetForegroundWindow() == hwnd) as i32
+        crate::log::debug(if ok {
+            "前面化: 空のマウス入力で権利を得て成功"
+        } else {
+            "前面化: 失敗"
+        });
+        ok as i32
     }
 }
 

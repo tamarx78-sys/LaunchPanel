@@ -24,7 +24,11 @@ pub fn to_hsv(c: Rgb) -> Hsv {
     } else {
         60.0 * ((r - g) / d + 4.0)
     };
-    Hsv { h, s: if max == 0.0 { 0.0 } else { d / max }, v: max }
+    Hsv {
+        h,
+        s: if max == 0.0 { 0.0 } else { d / max },
+        v: max,
+    }
 }
 
 pub fn to_rgb(hsv: Hsv) -> Rgb {
@@ -80,7 +84,11 @@ pub fn sv_plane(hue: f32, width: usize, height: usize) -> Vec<u8> {
 pub fn hue_strip(width: usize, height: usize) -> Vec<u8> {
     let mut data = vec![0u8; width * height * 4];
     for x in 0..width {
-        let c = to_rgb(Hsv { h: 360.0 * x as f32 / width as f32, s: 1.0, v: 1.0 });
+        let c = to_rgb(Hsv {
+            h: 360.0 * x as f32 / width as f32,
+            s: 1.0,
+            v: 1.0,
+        });
         for y in 0..height {
             let i = (y * width + x) * 4;
             data[i..i + 4].copy_from_slice(&[c.2, c.1, c.0, 255]);
@@ -95,15 +103,35 @@ mod tests {
 
     #[test]
     fn round_trip() {
-        for c in PRESETS.iter().copied().chain([Rgb(0, 0, 0), Rgb(255, 0, 0), Rgb(0, 255, 0), Rgb(0, 0, 255), Rgb(12, 200, 99)]) {
+        for c in PRESETS.iter().copied().chain([
+            Rgb(0, 0, 0),
+            Rgb(255, 0, 0),
+            Rgb(0, 255, 0),
+            Rgb(0, 0, 255),
+            Rgb(12, 200, 99),
+        ]) {
             assert_eq!(to_rgb(to_hsv(c)), c, "{c:?}");
         }
     }
 
     #[test]
     fn known_values() {
-        assert_eq!(to_hsv(Rgb(255, 0, 0)), Hsv { h: 0.0, s: 1.0, v: 1.0 });
-        assert_eq!(to_rgb(Hsv { h: 120.0, s: 1.0, v: 1.0 }), Rgb(0, 255, 0));
+        assert_eq!(
+            to_hsv(Rgb(255, 0, 0)),
+            Hsv {
+                h: 0.0,
+                s: 1.0,
+                v: 1.0
+            }
+        );
+        assert_eq!(
+            to_rgb(Hsv {
+                h: 120.0,
+                s: 1.0,
+                v: 1.0
+            }),
+            Rgb(0, 255, 0)
+        );
         assert_eq!(to_hsv(Rgb(60, 60, 60)).s, 0.0);
     }
 }

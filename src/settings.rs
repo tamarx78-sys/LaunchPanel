@@ -16,16 +16,21 @@ use windows::Win32::Graphics::Gdi::{ClientToScreen, InvalidateRect, ValidateRect
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE, VK_RETURN, VK_SHIFT,
+    GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+    VK_ESCAPE, VK_RETURN, VK_SHIFT,
 };
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
-use windows::Win32::UI::Shell::{DragFinish, DragQueryFileW, FileOpenDialog, HDROP, IFileOpenDialog, SIGDN_FILESYSPATH};
+use windows::Win32::UI::Shell::{
+    DragFinish, DragQueryFileW, FileOpenDialog, HDROP, IFileOpenDialog, SIGDN_FILESYSPATH,
+};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
 use crate::appearance::Look;
 use crate::color::{self, Hsv};
-use crate::config::{Backdrop, ItemButtonSettings, MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH, Rgb, Settings};
+use crate::config::{
+    Backdrop, ItemButtonSettings, MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH, Rgb, Settings,
+};
 use crate::dialog::{self, Dialog};
 use crate::platform::icon::Pixels;
 use crate::platform::shadow;
@@ -218,17 +223,32 @@ impl SettingsDialog {
         let mut y = 16.0;
 
         let heading = |l: &mut Layout, y: &mut f32, text: &str| {
-            l.texts.push((text.into(), Rect::new(MARGIN, *y, cw, 30.0), ui::TEXT, TextStyle::Heading));
+            l.texts.push((
+                text.into(),
+                Rect::new(MARGIN, *y, cw, 30.0),
+                ui::TEXT,
+                TextStyle::Heading,
+            ));
             *y += 38.0;
         };
         let caption = |l: &mut Layout, y: &mut f32, text: &str, color: Color| {
             let (_, h) = gfx.measure(text, TextStyle::Caption, cw);
-            l.texts.push((text.into(), Rect::new(MARGIN, *y, cw, h + 2.0), color, TextStyle::Caption));
+            l.texts.push((
+                text.into(),
+                Rect::new(MARGIN, *y, cw, h + 2.0),
+                color,
+                TextStyle::Caption,
+            ));
             *y += h + 12.0;
         };
         // 左に項目名、右端に操作部品を置く1行
         let row = |l: &mut Layout, y: &mut f32, label: &str, t: T, w: f32, h: f32| -> Rect {
-            l.texts.push((label.into(), Rect::new(MARGIN, *y, cw - w - 12.0, ROW), ui::TEXT, TextStyle::Label));
+            l.texts.push((
+                label.into(),
+                Rect::new(MARGIN, *y, cw - w - 12.0, ROW),
+                ui::TEXT,
+                TextStyle::Label,
+            ));
             let r = Rect::new(right - w, *y + (ROW - h) / 2.0, w, h);
             l.controls.push((t, r));
             *y += ROW;
@@ -239,28 +259,59 @@ impl SettingsDialog {
             let r = row(l, y, label, t, 250.0, 24.0);
             let slider = Rect::new(r.x, r.y, r.w - 56.0, r.h);
             l.controls.last_mut().unwrap().1 = slider;
-            l.texts.push((format!("{value}%"), Rect::new(r.x + r.w - 48.0, r.y, 48.0, r.h), ui::MUTED, TextStyle::Value));
+            l.texts.push((
+                format!("{value}%"),
+                Rect::new(r.x + r.w - 48.0, r.y, 48.0, r.h),
+                ui::MUTED,
+                TextStyle::Value,
+            ));
         };
         let color_row = |l: &mut Layout, y: &mut f32, label: &str, t: T, c: Rgb| {
             let r = row(l, y, label, t, 48.0, 28.0);
             let text = format!("R {}  G {}  B {}", c.0, c.1, c.2);
-            l.texts.push((text, Rect::new(r.x - 150.0, r.y, 140.0, r.h), ui::MUTED, TextStyle::Value));
+            l.texts.push((
+                text,
+                Rect::new(r.x - 150.0, r.y, 140.0, r.h),
+                ui::MUTED,
+                TextStyle::Value,
+            ));
         };
 
         // 1. ウィンドウ
         heading(&mut l, &mut y, "ウィンドウ");
         row(&mut l, &mut y, "1列の幅", T::ColumnWidth, 160.0, CTRL_H);
-        row(&mut l, &mut y, "ウィンドウに影を表示", T::Shadow, 46.0, 24.0);
-        slider_row(&mut l, &mut y, "影の濃さ", T::ShadowOpacity, self.draft.window.shadow_opacity);
-        caption(&mut l, &mut y, "1列の幅は左右にドラッグして変えます (Shift で 1px 単位)。影の設定は操作中から本体に反映され、キャンセルで元に戻ります。", ui::MUTED);
+        row(
+            &mut l,
+            &mut y,
+            "ウィンドウに影を表示",
+            T::Shadow,
+            46.0,
+            24.0,
+        );
+        slider_row(
+            &mut l,
+            &mut y,
+            "影の濃さ",
+            T::ShadowOpacity,
+            self.draft.window.shadow_opacity,
+        );
+        caption(
+            &mut l,
+            &mut y,
+            "1列の幅は左右にドラッグして変えます (Shift で 1px 単位)。影の設定は操作中から本体に反映され、キャンセルで元に戻ります。",
+            ui::MUTED,
+        );
         y += 12.0;
 
         // 2. 背景
         heading(&mut l, &mut y, "背景");
-        l.controls.push((T::DropZone, Rect::new(MARGIN, y, cw, 120.0)));
+        l.controls
+            .push((T::DropZone, Rect::new(MARGIN, y, cw, 120.0)));
         y += 130.0;
-        l.controls.push((T::Browse, Rect::new(MARGIN, y, 100.0, CTRL_H)));
-        l.controls.push((T::Clear, Rect::new(MARGIN + 108.0, y, 100.0, CTRL_H)));
+        l.controls
+            .push((T::Browse, Rect::new(MARGIN, y, 100.0, CTRL_H)));
+        l.controls
+            .push((T::Clear, Rect::new(MARGIN + 108.0, y, 100.0, CTRL_H)));
         y += CTRL_H + 10.0;
         match &self.background_message {
             Some((m, true)) => caption(&mut l, &mut y, m, ui::ERROR),
@@ -268,16 +319,26 @@ impl SettingsDialog {
             None => caption(
                 &mut l,
                 &mut y,
-                &format!("画像ファイルをドロップするか、参照から選びます。幅・高さとも {MAX_IMAGE}px 未満の画像を指定できます。"),
+                &format!(
+                    "画像ファイルをドロップするか、参照から選びます。幅・高さとも {MAX_IMAGE}px 未満の画像を指定できます。"
+                ),
                 ui::MUTED,
             ),
         }
         // 画像がない時の背景 (なし / 壁紙ぼかし / アクリル)
-        l.texts.push(("画像がない時の背景".into(), Rect::new(MARGIN, y, cw, ROW), ui::TEXT, TextStyle::Label));
+        l.texts.push((
+            "画像がない時の背景".into(),
+            Rect::new(MARGIN, y, cw, ROW),
+            ui::TEXT,
+            TextStyle::Label,
+        ));
         let mut x = right;
         for (i, w) in [86.0, 100.0, 60.0].into_iter().enumerate().rev() {
             x -= w;
-            l.controls.push((T::BackdropKind(i), Rect::new(x, y + (ROW - CTRL_H) / 2.0, w, CTRL_H)));
+            l.controls.push((
+                T::BackdropKind(i),
+                Rect::new(x, y + (ROW - CTRL_H) / 2.0, w, CTRL_H),
+            ));
             x -= 6.0;
         }
         y += ROW;
@@ -303,36 +364,72 @@ impl SettingsDialog {
         let b = &self.draft.item_button;
         heading(&mut l, &mut y, "ボタン");
         color_row(&mut l, &mut y, "背景色", T::BgColor, b.background_color);
-        slider_row(&mut l, &mut y, "透過率 (0% = 不透明)", T::Transparency, b.transparency);
+        slider_row(
+            &mut l,
+            &mut y,
+            "透過率 (0% = 不透明)",
+            T::Transparency,
+            b.transparency,
+        );
         color_row(&mut l, &mut y, "テキスト色", T::TextColor, b.text_color);
         row(&mut l, &mut y, "太字", T::Bold, 46.0, 24.0);
         y += 6.0;
-        l.texts.push(("プレビュー (ポインターを重ねると強調表示)".into(), Rect::new(MARGIN, y, cw, 20.0), ui::MUTED, TextStyle::Caption));
+        l.texts.push((
+            "プレビュー (ポインターを重ねると強調表示)".into(),
+            Rect::new(MARGIN, y, cw, 20.0),
+            ui::MUTED,
+            TextStyle::Caption,
+        ));
         y += 24.0;
-        l.controls.push((T::Preview, Rect::new(MARGIN, y, cw, 76.0)));
+        l.controls
+            .push((T::Preview, Rect::new(MARGIN, y, cw, 76.0)));
         y += 86.0;
-        l.controls.push((T::Reset, Rect::new(MARGIN, y, 150.0, CTRL_H)));
+        l.controls
+            .push((T::Reset, Rect::new(MARGIN, y, 150.0, CTRL_H)));
         y += CTRL_H + 22.0;
 
         // 4. ホットキー
         heading(&mut l, &mut y, "ホットキー");
         let mut x = MARGIN;
         for (i, w) in [62.0, 62.0, 66.0, 62.0].into_iter().enumerate() {
-            l.controls.push((T::Modifier(i), Rect::new(x, y + (ROW - CTRL_H) / 2.0, w, CTRL_H)));
+            l.controls.push((
+                T::Modifier(i),
+                Rect::new(x, y + (ROW - CTRL_H) / 2.0, w, CTRL_H),
+            ));
             x += w + 6.0;
         }
-        l.texts.push(("+".into(), Rect::new(x, y, 20.0, ROW), ui::MUTED, TextStyle::Value));
-        l.controls.push((T::Key, Rect::new(x + 26.0, y + (ROW - CTRL_H) / 2.0, 72.0, CTRL_H)));
+        l.texts.push((
+            "+".into(),
+            Rect::new(x, y, 20.0, ROW),
+            ui::MUTED,
+            TextStyle::Value,
+        ));
+        l.controls.push((
+            T::Key,
+            Rect::new(x + 26.0, y + (ROW - CTRL_H) / 2.0, 72.0, CTRL_H),
+        ));
         y += ROW + 4.0;
         match &self.hotkey_message {
             Some(m) => caption(&mut l, &mut y, m, ui::ERROR),
-            None => caption(&mut l, &mut y, "ホットキーの変更は次回起動時から有効になります。Win は現在のバージョンでは変更できません。", ui::MUTED),
+            None => caption(
+                &mut l,
+                &mut y,
+                "ホットキーの変更は次回起動時から有効になります。Win は現在のバージョンでは変更できません。",
+                ui::MUTED,
+            ),
         }
         y += 12.0;
 
         // 5. 実験的機能
         heading(&mut l, &mut y, "実験的機能");
-        row(&mut l, &mut y, "デスクトップ空白のダブルクリックで表示", T::Desktop, 46.0, 24.0);
+        row(
+            &mut l,
+            &mut y,
+            "デスクトップ空白のダブルクリックで表示",
+            T::Desktop,
+            46.0,
+            24.0,
+        );
         caption(
             &mut l,
             &mut y,
@@ -346,8 +443,14 @@ impl SettingsDialog {
     fn footer_controls(&self) -> [(T, Rect); 2] {
         let y = self.height - FOOTER + (FOOTER - 32.0) / 2.0;
         [
-            (T::Ok, Rect::new(self.width - MARGIN - 108.0 * 2.0 + 8.0, y, 100.0, 32.0)),
-            (T::Cancel, Rect::new(self.width - MARGIN - 100.0, y, 100.0, 32.0)),
+            (
+                T::Ok,
+                Rect::new(self.width - MARGIN - 108.0 * 2.0 + 8.0, y, 100.0, 32.0),
+            ),
+            (
+                T::Cancel,
+                Rect::new(self.width - MARGIN - 100.0, y, 100.0, 32.0),
+            ),
         ]
     }
 
@@ -370,18 +473,36 @@ impl SettingsDialog {
         let mut x = (p.anchor.x + p.anchor.w - PICKER_W).max(8.0);
         x = x.min(self.width - PICKER_W - 8.0).max(8.0);
         let below = p.anchor.y + p.anchor.h + 6.0;
-        let y = if below + h <= self.height - 8.0 { below } else { (p.anchor.y - 6.0 - h).max(8.0) };
+        let y = if below + h <= self.height - 8.0 {
+            below
+        } else {
+            (p.anchor.y - 6.0 - h).max(8.0)
+        };
         let inner = PICKER_W - 24.0;
         let mut v = vec![(T::PickPanel, Rect::new(x, y, PICKER_W, h))];
         v.push((T::PickSv, Rect::new(x + 12.0, y + 12.0, inner, SV_H)));
-        v.push((T::PickHue, Rect::new(x + 12.0, y + 22.0 + SV_H, inner, 16.0)));
+        v.push((
+            T::PickHue,
+            Rect::new(x + 12.0, y + 22.0 + SV_H, inner, 16.0),
+        ));
         let cell = (inner - 5.0 * 8.0) / 6.0;
         let py = y + 22.0 + SV_H + 16.0 + 12.0;
         for i in 0..color::PRESETS.len() {
             let (c, r) = (i % 6, i / 6);
-            v.push((T::Preset(i), Rect::new(x + 12.0 + c as f32 * (cell + 8.0), py + r as f32 * 32.0, cell, 24.0)));
+            v.push((
+                T::Preset(i),
+                Rect::new(
+                    x + 12.0 + c as f32 * (cell + 8.0),
+                    py + r as f32 * 32.0,
+                    cell,
+                    24.0,
+                ),
+            ));
         }
-        v.push((T::PickClose, Rect::new(x + PICKER_W - 12.0 - 90.0, y + h - 12.0 - 32.0, 90.0, 32.0)));
+        v.push((
+            T::PickClose,
+            Rect::new(x + PICKER_W - 12.0 - 90.0, y + h - 12.0 - 32.0, 90.0, 32.0),
+        ));
         Some(v)
     }
 
@@ -391,22 +512,37 @@ impl SettingsDialog {
             if !rects[0].1.contains(x, y) {
                 return None;
             }
-            return rects[1..].iter().find(|(_, r)| r.contains(x, y)).map(|(t, _)| *t).or(Some(T::PickPanel));
+            return rects[1..]
+                .iter()
+                .find(|(_, r)| r.contains(x, y))
+                .map(|(t, _)| *t)
+                .or(Some(T::PickPanel));
         }
-        if let Some((t, _)) = self.footer_controls().iter().find(|(_, r)| r.contains(x, y)) {
+        if let Some((t, _)) = self
+            .footer_controls()
+            .iter()
+            .find(|(_, r)| r.contains(x, y))
+        {
             return Some(*t);
         }
         if !self.content_view().contains(x, y) {
             return None;
         }
-        self.layout().controls.iter().find(|(_, r)| self.view(*r).contains(x, y)).map(|(t, _)| *t)
+        self.layout()
+            .controls
+            .iter()
+            .find(|(_, r)| self.view(*r).contains(x, y))
+            .map(|(t, _)| *t)
     }
 
     fn enabled(&self, t: T) -> bool {
         match t {
             T::ShadowOpacity => self.draft.window.shadow,
             // ぼかしは壁紙ぼかしか背景画像の時だけ効く
-            T::Blur => !self.draft.background_image.is_empty() || self.draft.backdrop == Backdrop::Wallpaper,
+            T::Blur => {
+                !self.draft.background_image.is_empty()
+                    || self.draft.backdrop == Backdrop::Wallpaper
+            }
             T::Clear => !self.draft.background_image.is_empty(),
             T::Modifier(3) => false, // Win は現在のバージョンでは変更不可
             _ => true,
@@ -418,7 +554,12 @@ impl SettingsDialog {
     /// 編集中の背景を本体へ試し表示する。
     fn preview_look(&self) {
         let d = &self.draft;
-        let look = Look { image: d.background_image.clone(), backdrop: d.backdrop, blur: d.blur, tint: d.tint };
+        let look = Look {
+            image: d.background_image.clone(),
+            backdrop: d.backdrop,
+            blur: d.blur,
+            tint: d.tint,
+        };
         PREVIEW.with(|p| *p.borrow_mut() = Some(look));
         // SAFETY: 本体への通知
         unsafe {
@@ -429,11 +570,21 @@ impl SettingsDialog {
     fn preview_shadow(&self) {
         let w = &self.draft.window;
         // SAFETY: 本体ウィンドウへの影の設定 (同じ UI スレッド)
-        unsafe { shadow::lp_set_window_shadow(self.owner.0 as isize, w.shadow as i32, w.shadow_opacity) };
+        unsafe {
+            shadow::lp_set_window_shadow(self.owner.0 as isize, w.shadow as i32, w.shadow_opacity)
+        };
     }
 
     fn set_slider(&mut self, t: T, x: f32) {
-        let Some(r) = self.layout().controls.iter().find(|(c, _)| *c == t).map(|(_, r)| self.view(*r)) else { return };
+        let Some(r) = self
+            .layout()
+            .controls
+            .iter()
+            .find(|(c, _)| *c == t)
+            .map(|(_, r)| self.view(*r))
+        else {
+            return;
+        };
         let value = (ui::slider_frac(r, x) * 100.0).round() as i32;
         match t {
             T::ShadowOpacity => {
@@ -463,11 +614,15 @@ impl SettingsDialog {
 
     /// 背景画像を設定する。寸法が上限以上・読めない画像は受け付けず、理由を表示する。
     fn set_background(&mut self, path: &str) {
-        let name = std::path::Path::new(path).file_name().map_or(path.into(), |n| n.to_string_lossy().into_owned());
+        let name = std::path::Path::new(path)
+            .file_name()
+            .map_or(path.into(), |n| n.to_string_lossy().into_owned());
         let size = self.gfx.as_ref().and_then(|g| g.image_size(path));
         self.background_message = match size {
             Some((w, h)) if w >= MAX_IMAGE || h >= MAX_IMAGE => Some((
-                format!("画像が大きすぎます ({w}×{h}px)。幅・高さとも {MAX_IMAGE}px 未満の画像を指定してください。({name})"),
+                format!(
+                    "画像が大きすぎます ({w}×{h}px)。幅・高さとも {MAX_IMAGE}px 未満の画像を指定してください。({name})"
+                ),
                 true,
             )),
             Some(_) => {
@@ -483,10 +638,20 @@ impl SettingsDialog {
     fn browse_background(&mut self) {
         // SAFETY: COM のファイル選択ダイアログ。文字列は呼び出し中有効
         let chosen = unsafe {
-            let Ok(dlg) = CoCreateInstance::<_, IFileOpenDialog>(&FileOpenDialog, None, CLSCTX_INPROC_SERVER) else { return };
+            let Ok(dlg) =
+                CoCreateInstance::<_, IFileOpenDialog>(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
+            else {
+                return;
+            };
             let filters = [
-                COMDLG_FILTERSPEC { pszName: w!("画像ファイル"), pszSpec: w!("*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.tif;*.tiff") },
-                COMDLG_FILTERSPEC { pszName: w!("すべてのファイル"), pszSpec: w!("*.*") },
+                COMDLG_FILTERSPEC {
+                    pszName: w!("画像ファイル"),
+                    pszSpec: w!("*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.tif;*.tiff"),
+                },
+                COMDLG_FILTERSPEC {
+                    pszName: w!("すべてのファイル"),
+                    pszSpec: w!("*.*"),
+                },
             ];
             let _ = dlg.SetFileTypes(&filters);
             let _ = dlg.SetTitle(w!("背景画像の選択"));
@@ -494,7 +659,9 @@ impl SettingsDialog {
                 return; // キャンセル
             }
             let Ok(item) = dlg.GetResult() else { return };
-            let Ok(p) = item.GetDisplayName(SIGDN_FILESYSPATH) else { return };
+            let Ok(p) = item.GetDisplayName(SIGDN_FILESYSPATH) else {
+                return;
+            };
             let s = p.to_string().unwrap_or_default();
             CoTaskMemFree(Some(p.0 as *const _));
             s
@@ -535,7 +702,10 @@ impl SettingsDialog {
 
     fn choose_key(&mut self, anchor: Rect) {
         let s = dialog::scale(self.hwnd);
-        let mut pt = POINT { x: (anchor.x * s) as i32, y: ((anchor.y + anchor.h) * s) as i32 };
+        let mut pt = POINT {
+            x: (anchor.x * s) as i32,
+            y: ((anchor.y + anchor.h) * s) as i32,
+        };
         // SAFETY: メニューは関数内で生成・破棄する
         let cmd = unsafe {
             let _ = ClientToScreen(self.hwnd, &mut pt);
@@ -552,7 +722,15 @@ impl SettingsDialog {
                 let label = crate::platform::wide::to_wide(&c.to_string());
                 let _ = AppendMenuW(menu, flags, c as usize, PCWSTR(label.as_ptr()));
             }
-            let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, None, self.hwnd, None);
+            let cmd = TrackPopupMenu(
+                menu,
+                TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN,
+                pt.x,
+                pt.y,
+                None,
+                self.hwnd,
+                None,
+            );
             let _ = DestroyMenu(menu);
             cmd.0 as u32
         };
@@ -566,7 +744,13 @@ impl SettingsDialog {
             ColorTarget::Background => self.draft.item_button.background_color,
             ColorTarget::Text => self.draft.item_button.text_color,
         };
-        self.picker = Some(Picker { target, hsv: color::to_hsv(c), anchor, sv: None, hue: None });
+        self.picker = Some(Picker {
+            target,
+            hsv: color::to_hsv(c),
+            anchor,
+            sv: None,
+            hue: None,
+        });
     }
 
     fn set_picked(&mut self, c: Rgb, hsv: Option<Hsv>) {
@@ -586,8 +770,12 @@ impl SettingsDialog {
     }
 
     fn drag_picker(&mut self, t: T, x: f32, y: f32) {
-        let Some(rects) = self.picker_rects() else { return };
-        let Some(r) = rects.iter().find(|(c, _)| *c == t).map(|(_, r)| *r) else { return };
+        let Some(rects) = self.picker_rects() else {
+            return;
+        };
+        let Some(r) = rects.iter().find(|(c, _)| *c == t).map(|(_, r)| *r) else {
+            return;
+        };
         let Some(p) = &self.picker else { return };
         let mut hsv = p.hsv;
         match t {
@@ -617,13 +805,27 @@ impl SettingsDialog {
         // SAFETY: マウスキャプチャ
         unsafe { SetCapture(self.hwnd) };
         match t {
-            T::ColumnWidth => self.drag = Some(Drag { target: t, start_x: x, start_value: self.column_width() }),
+            T::ColumnWidth => {
+                self.drag = Some(Drag {
+                    target: t,
+                    start_x: x,
+                    start_value: self.column_width(),
+                })
+            }
             T::ShadowOpacity | T::Transparency | T::Blur | T::Tint => {
-                self.drag = Some(Drag { target: t, start_x: x, start_value: 0 });
+                self.drag = Some(Drag {
+                    target: t,
+                    start_x: x,
+                    start_value: 0,
+                });
                 self.set_slider(t, x);
             }
             T::PickSv | T::PickHue => {
-                self.drag = Some(Drag { target: t, start_x: x, start_value: 0 });
+                self.drag = Some(Drag {
+                    target: t,
+                    start_x: x,
+                    start_value: 0,
+                });
                 self.drag_picker(t, x, y);
             }
             _ => self.pressed = Some(t),
@@ -640,7 +842,11 @@ impl SettingsDialog {
                     let fine = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
                     // 4 DIP ごとに 10px (Shift なら 1px) 変わる
                     let steps = ((x - start_x) / 4.0).round() as i32;
-                    let value = if fine { start_value + steps } else { (start_value + steps * 10) / 10 * 10 };
+                    let value = if fine {
+                        start_value + steps
+                    } else {
+                        (start_value + steps * 10) / 10 * 10
+                    };
                     self.set_column_width(value);
                 }
                 T::ShadowOpacity | T::Transparency | T::Blur | T::Tint => self.set_slider(t, x),
@@ -684,7 +890,12 @@ impl SettingsDialog {
             self.invalidate();
             return;
         }
-        let anchor = self.layout().controls.iter().find(|(c, _)| *c == t).map(|(_, r)| self.view(*r));
+        let anchor = self
+            .layout()
+            .controls
+            .iter()
+            .find(|(c, _)| *c == t)
+            .map(|(_, r)| self.view(*r));
         match t {
             T::Shadow => {
                 self.draft.window.shadow = !self.draft.window.shadow;
@@ -702,8 +913,14 @@ impl SettingsDialog {
                 self.draft.backdrop = [Backdrop::None, Backdrop::Wallpaper, Backdrop::Acrylic][i];
                 self.preview_look();
             }
-            T::BgColor => self.open_picker(ColorTarget::Background, anchor.unwrap_or(Rect::new(x, y, 0.0, 0.0))),
-            T::TextColor => self.open_picker(ColorTarget::Text, anchor.unwrap_or(Rect::new(x, y, 0.0, 0.0))),
+            T::BgColor => self.open_picker(
+                ColorTarget::Background,
+                anchor.unwrap_or(Rect::new(x, y, 0.0, 0.0)),
+            ),
+            T::TextColor => self.open_picker(
+                ColorTarget::Text,
+                anchor.unwrap_or(Rect::new(x, y, 0.0, 0.0)),
+            ),
             T::Reset => self.draft.item_button = ItemButtonSettings::default(),
             T::Modifier(i) => self.toggle_modifier(i),
             T::Key => {
@@ -727,11 +944,17 @@ impl SettingsDialog {
                 let v = self.column_width() + (notches.signum() as i32) * 10;
                 self.set_column_width(v / 10 * 10);
             }
-            Some(t @ (T::ShadowOpacity | T::Transparency | T::Blur | T::Tint)) if self.enabled(t) => {
+            Some(t @ (T::ShadowOpacity | T::Transparency | T::Blur | T::Tint))
+                if self.enabled(t) =>
+            {
                 let step = notches.signum() as i32;
                 match t {
                     T::Blur | T::Tint => {
-                        let v = if t == T::Blur { &mut self.draft.blur } else { &mut self.draft.tint };
+                        let v = if t == T::Blur {
+                            &mut self.draft.blur
+                        } else {
+                            &mut self.draft.tint
+                        };
                         *v = (*v + step).clamp(0, 100);
                         self.preview_look();
                     }
@@ -766,7 +989,12 @@ impl SettingsDialog {
         }
         // SAFETY: 本体への通知とダイアログの破棄
         unsafe {
-            let _ = PostMessageW(Some(self.owner), WM_APP_SETTINGS, WPARAM(ok as usize), LPARAM(0));
+            let _ = PostMessageW(
+                Some(self.owner),
+                WM_APP_SETTINGS,
+                WPARAM(ok as usize),
+                LPARAM(0),
+            );
         }
         dialog::close(self.hwnd);
     }
@@ -795,14 +1023,27 @@ impl SettingsDialog {
             let view = self.content_view();
             let bar_h = (view.h * view.h / layout.height).max(30.0);
             let bar_y = (view.h - bar_h) * (self.scroll / self.max_scroll(&layout).max(1.0));
-            gfx.fill_round(Rect::new(self.width - 6.0, bar_y + 2.0, 3.0, bar_h - 4.0), 1.5, ui::BORDER);
+            gfx.fill_round(
+                Rect::new(self.width - 6.0, bar_y + 2.0, 3.0, bar_h - 4.0),
+                1.5,
+                ui::BORDER,
+            );
         }
         gfx.pop_clip();
 
         // 下部の OK / キャンセル (スクロールしない)
-        gfx.fill_rect(Rect::new(0.0, self.height - FOOTER, self.width, FOOTER), ui::PANEL);
+        gfx.fill_rect(
+            Rect::new(0.0, self.height - FOOTER, self.width, FOOTER),
+            ui::PANEL,
+        );
         for (t, r) in self.footer_controls() {
-            ui::button(gfx, r, if t == T::Ok { "OK" } else { "キャンセル" }, t == T::Ok, self.state(t));
+            ui::button(
+                gfx,
+                r,
+                if t == T::Ok { "OK" } else { "キャンセル" },
+                t == T::Ok,
+                self.state(t),
+            );
         }
 
         self.draw_picker();
@@ -844,7 +1085,12 @@ impl SettingsDialog {
             T::TextColor => ui::swatch(gfx, r, rgb(d.item_button.text_color), st),
             T::Modifier(i) => {
                 let h = &d.hotkey;
-                let (label, on) = [("Ctrl", h.ctrl), ("Alt", h.alt), ("Shift", h.shift), ("Win", h.win)][i];
+                let (label, on) = [
+                    ("Ctrl", h.ctrl),
+                    ("Alt", h.alt),
+                    ("Shift", h.shift),
+                    ("Win", h.win),
+                ][i];
                 ui::toggle(gfx, r, label, on, st);
             }
             T::Key => ui::dropdown(gfx, r, &d.hotkey.key.to_string(), st),
@@ -857,20 +1103,40 @@ impl SettingsDialog {
     fn draw_drop_zone(&self, r: Rect, st: State) {
         let gfx = self.gfx.as_ref().unwrap();
         let path = &self.draft.background_image;
-        let bitmap = self.thumbnail.as_ref().and_then(|(_, p, b)| (p == path).then_some(b.as_ref()).flatten());
+        let bitmap = self
+            .thumbnail
+            .as_ref()
+            .and_then(|(_, p, b)| (p == path).then_some(b.as_ref()).flatten());
         gfx.fill_round(r, 8.0, ui::PANEL);
         if let Some(b) = bitmap {
             gfx.push_clip(r.inset(1.0, 1.0));
             gfx.bitmap_cover(b, r);
-            let name = std::path::Path::new(path).file_name().map_or(path.clone(), |n| n.to_string_lossy().into_owned());
+            let name = std::path::Path::new(path)
+                .file_name()
+                .map_or(path.clone(), |n| n.to_string_lossy().into_owned());
             let bar = Rect::new(r.x, r.y + r.h - 26.0, r.w, 26.0);
             gfx.fill_rect(bar, Color::rgba(0x10, 0x11, 0x14, 0xC0));
             gfx.text(&name, bar.inset(10.0, 0.0), ui::TEXT, TextStyle::Label);
             gfx.pop_clip();
         } else {
-            gfx.text("\u{EB9F}", Rect::new(r.x, r.y + 22.0, r.w, 30.0), ui::MUTED, TextStyle::Glyph);
-            gfx.text("画像ファイルをここへドロップ (クリックで参照)", Rect::new(r.x, r.y + 56.0, r.w, 24.0), ui::MUTED, TextStyle::Value);
-            gfx.text("背景画像なし", Rect::new(r.x, r.y + 80.0, r.w, 20.0), ui::DISABLED, TextStyle::Small);
+            gfx.text(
+                "\u{EB9F}",
+                Rect::new(r.x, r.y + 22.0, r.w, 30.0),
+                ui::MUTED,
+                TextStyle::Glyph,
+            );
+            gfx.text(
+                "画像ファイルをここへドロップ (クリックで参照)",
+                Rect::new(r.x, r.y + 56.0, r.w, 24.0),
+                ui::MUTED,
+                TextStyle::Value,
+            );
+            gfx.text(
+                "背景画像なし",
+                Rect::new(r.x, r.y + 80.0, r.w, 20.0),
+                ui::DISABLED,
+                TextStyle::Small,
+            );
         }
         gfx.stroke_round(r, 8.0, if st.hover { ui::ACCENT } else { ui::BORDER }, 1.5);
     }
@@ -881,11 +1147,21 @@ impl SettingsDialog {
         let path = &self.draft.background_image;
         gfx.push_clip(r);
         gfx.fill_round(r, 8.0, Color::rgba(0x22, 0x23, 0x28, 0xFF));
-        if let Some(b) = self.thumbnail.as_ref().and_then(|(_, p, b)| (p == path).then_some(b.as_ref()).flatten()) {
+        if let Some(b) = self
+            .thumbnail
+            .as_ref()
+            .and_then(|(_, p, b)| (p == path).then_some(b.as_ref()).flatten())
+        {
             gfx.bitmap_cover(b, r);
         }
-        let button = Rect::new(r.x + 16.0, r.y + (r.h - 36.0) / 2.0, (r.w - 32.0).min(280.0), 36.0);
-        let hovered = self.hover == Some(T::Preview) && button.contains_point(crate::dialog::cursor(self.hwnd));
+        let button = Rect::new(
+            r.x + 16.0,
+            r.y + (r.h - 36.0) / 2.0,
+            (r.w - 32.0).min(280.0),
+            36.0,
+        );
+        let hovered = self.hover == Some(T::Preview)
+            && button.contains_point(crate::dialog::cursor(self.hwnd));
         ui::item_button(
             gfx,
             button,
@@ -900,9 +1176,16 @@ impl SettingsDialog {
     }
 
     fn draw_picker(&self) {
-        let (Some(rects), Some(p), Some(gfx)) = (self.picker_rects(), &self.picker, &self.gfx) else { return };
+        let (Some(rects), Some(p), Some(gfx)) = (self.picker_rects(), &self.picker, &self.gfx)
+        else {
+            return;
+        };
         let panel = rects[0].1;
-        gfx.fill_round(Rect::new(panel.x + 2.0, panel.y + 4.0, panel.w, panel.h), 10.0, Color::rgba(0, 0, 0, 0x60));
+        gfx.fill_round(
+            Rect::new(panel.x + 2.0, panel.y + 4.0, panel.w, panel.h),
+            10.0,
+            Color::rgba(0, 0, 0, 0x60),
+        );
         gfx.fill_round(panel, 10.0, ui::PANEL);
         gfx.stroke_round(panel, 10.0, ui::BORDER, 1.0);
         for (t, r) in &rects[1..] {
@@ -912,15 +1195,30 @@ impl SettingsDialog {
                         gfx.bitmap(b, *r, 1.0);
                     }
                     let (cx, cy) = (r.x + p.hsv.s * r.w, r.y + (1.0 - p.hsv.v) * r.h);
-                    gfx.stroke_round(Rect::new(cx - 7.0, cy - 7.0, 14.0, 14.0), 7.0, Color::rgba(0, 0, 0, 0xA0), 3.0);
-                    gfx.stroke_round(Rect::new(cx - 6.0, cy - 6.0, 12.0, 12.0), 6.0, Color::rgba(255, 255, 255, 0xFF), 2.0);
+                    gfx.stroke_round(
+                        Rect::new(cx - 7.0, cy - 7.0, 14.0, 14.0),
+                        7.0,
+                        Color::rgba(0, 0, 0, 0xA0),
+                        3.0,
+                    );
+                    gfx.stroke_round(
+                        Rect::new(cx - 6.0, cy - 6.0, 12.0, 12.0),
+                        6.0,
+                        Color::rgba(255, 255, 255, 0xFF),
+                        2.0,
+                    );
                 }
                 T::PickHue => {
                     if let Some((_, b)) = &p.hue {
                         gfx.bitmap(b, *r, 1.0);
                     }
                     let cx = r.x + p.hsv.h / 360.0 * r.w;
-                    gfx.stroke_round(Rect::new(cx - 3.0, r.y - 3.0, 6.0, r.h + 6.0), 3.0, Color::rgba(255, 255, 255, 0xFF), 2.0);
+                    gfx.stroke_round(
+                        Rect::new(cx - 3.0, r.y - 3.0, 6.0, r.h + 6.0),
+                        3.0,
+                        Color::rgba(255, 255, 255, 0xFF),
+                        2.0,
+                    );
                 }
                 T::Preset(i) => {
                     let c = color::PRESETS[*i];
@@ -935,7 +1233,11 @@ impl SettingsDialog {
             ColorTarget::Text => self.draft.item_button.text_color,
         };
         let close = rects.last().unwrap().1;
-        gfx.fill_round(Rect::new(panel.x + 12.0, close.y + 4.0, 24.0, 24.0), 5.0, Color::rgba(c.0, c.1, c.2, 255));
+        gfx.fill_round(
+            Rect::new(panel.x + 12.0, close.y + 4.0, 24.0, 24.0),
+            5.0,
+            Color::rgba(c.0, c.1, c.2, 255),
+        );
         gfx.text(
             &format!("R {}  G {}  B {}", c.0, c.1, c.2),
             Rect::new(panel.x + 44.0, close.y, close.x - panel.x - 50.0, close.h),
@@ -948,24 +1250,51 @@ impl SettingsDialog {
     fn refresh_bitmaps(&mut self) {
         let Some(gfx) = &self.gfx else { return };
         let generation = gfx.generation;
-        if self.icon_bitmap.as_ref().is_none_or(|(g, _)| *g != generation) {
-            self.icon_bitmap = self.icon.as_ref().and_then(|p| gfx.create_bitmap(p)).map(|b| (generation, b));
+        if self
+            .icon_bitmap
+            .as_ref()
+            .is_none_or(|(g, _)| *g != generation)
+        {
+            self.icon_bitmap = self
+                .icon
+                .as_ref()
+                .and_then(|p| gfx.create_bitmap(p))
+                .map(|b| (generation, b));
         }
         let path = &self.draft.background_image;
-        if self.thumbnail.as_ref().is_none_or(|(g, p, _)| *g != generation || p != path) {
-            let bitmap = if path.is_empty() { None } else { gfx.load_image(path) };
+        if self
+            .thumbnail
+            .as_ref()
+            .is_none_or(|(g, p, _)| *g != generation || p != path)
+        {
+            let bitmap = if path.is_empty() {
+                None
+            } else {
+                gfx.load_image(path)
+            };
             self.thumbnail = Some((generation, path.clone(), bitmap));
         }
         if let Some(p) = &mut self.picker {
             let s = 2; // 高 DPI でも滑らかに見えるよう 2 倍の解像度で作る
-            if p.sv.as_ref().is_none_or(|(g, h, _)| *g != generation || *h != p.hsv.h) {
+            if p.sv
+                .as_ref()
+                .is_none_or(|(g, h, _)| *g != generation || *h != p.hsv.h)
+            {
                 let (w, h) = ((PICKER_W as usize - 24) * s, SV_H as usize * s);
-                let pixels = Pixels { width: w as i32, height: h as i32, data: color::sv_plane(p.hsv.h, w, h) };
+                let pixels = Pixels {
+                    width: w as i32,
+                    height: h as i32,
+                    data: color::sv_plane(p.hsv.h, w, h),
+                };
                 p.sv = gfx.create_bitmap(&pixels).map(|b| (generation, p.hsv.h, b));
             }
             if p.hue.as_ref().is_none_or(|(g, _)| *g != generation) {
                 let (w, h) = ((PICKER_W as usize - 24) * s, 16 * s);
-                let pixels = Pixels { width: w as i32, height: h as i32, data: color::hue_strip(w, h) };
+                let pixels = Pixels {
+                    width: w as i32,
+                    height: h as i32,
+                    data: color::hue_strip(w, h),
+                };
                 p.hue = gfx.create_bitmap(&pixels).map(|b| (generation, b));
             }
         }
@@ -984,7 +1313,10 @@ impl Dialog for SettingsDialog {
             }
             WM_ERASEBKGND => return Some(LRESULT(1)),
             WM_SIZE => {
-                let (w, h) = ((lparam.0 & 0xFFFF) as u32, ((lparam.0 >> 16) & 0xFFFF) as u32);
+                let (w, h) = (
+                    (lparam.0 & 0xFFFF) as u32,
+                    ((lparam.0 >> 16) & 0xFFFF) as u32,
+                );
                 if let Some(g) = &self.gfx {
                     g.resize(w, h);
                 }
@@ -1001,12 +1333,24 @@ impl Dialog for SettingsDialog {
                 }
                 // SAFETY: 自分のウィンドウの移動
                 unsafe {
-                    let _ = SetWindowPos(hwnd, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
+                    let _ = SetWindowPos(
+                        hwnd,
+                        None,
+                        r.left,
+                        r.top,
+                        r.right - r.left,
+                        r.bottom - r.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
                 }
             }
             WM_SETCURSOR if (lparam.0 & 0xFFFF) as u32 == HTCLIENT => {
                 let (x, y) = dialog::cursor(hwnd);
-                let target = self.drag.as_ref().map(|d| d.target).or_else(|| self.hit(x, y));
+                let target = self
+                    .drag
+                    .as_ref()
+                    .map(|d| d.target)
+                    .or_else(|| self.hit(x, y));
                 let cursor = match target {
                     Some(T::ColumnWidth) => IDC_SIZEWE,
                     Some(T::PickPanel) | None => IDC_ARROW,

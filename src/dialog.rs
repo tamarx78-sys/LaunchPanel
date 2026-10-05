@@ -6,7 +6,9 @@
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
-use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow};
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
@@ -20,11 +22,17 @@ pub trait Dialog {
     fn handle(&mut self, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT>;
 }
 
-const CLASS: PCWSTR = w!("LaunchPanel3Dialog");
+const CLASS: PCWSTR = w!("LaunchPanelDialog");
 
 /// `owner` に所有されるダイアログを開く。`width`×`height` はクライアント領域の DIP。
 /// 画面の作業領域の 9 割を超えないよう縮め、本体の中央に重ねて置く。
-pub fn open(owner: HWND, title: &str, width: f64, height: f64, make: impl FnOnce(HWND) -> Box<dyn Dialog>) -> Option<HWND> {
+pub fn open(
+    owner: HWND,
+    title: &str,
+    width: f64,
+    height: f64,
+    make: impl FnOnce(HWND) -> Box<dyn Dialog>,
+) -> Option<HWND> {
     // SAFETY: ウィンドウクラスの登録とウィンドウの生成・配置
     unsafe {
         let instance = GetModuleHandleW(None).ok()?;
@@ -58,22 +66,40 @@ pub fn open(owner: HWND, title: &str, width: f64, height: f64, make: impl FnOnce
         )
         .ok()?;
         let dark = 1i32;
-        let _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark as *const _ as *const _, 4);
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            &dark as *const _ as *const _,
+            4,
+        );
 
         // 本体のいるモニターの作業領域に収まる大きさで、本体の中央に重ねる
         let dpi = GetDpiForWindow(owner).max(96);
         let scale = dpi as f64 / 96.0;
-        let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
-        let _ = GetMonitorInfoW(MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST), &mut info);
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        let _ = GetMonitorInfoW(
+            MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST),
+            &mut info,
+        );
         let work = info.rcWork;
-        let mut rc = RECT { left: 0, top: 0, right: (width * scale) as i32, bottom: (height * scale) as i32 };
+        let mut rc = RECT {
+            left: 0,
+            top: 0,
+            right: (width * scale) as i32,
+            bottom: (height * scale) as i32,
+        };
         let _ = AdjustWindowRectExForDpi(&mut rc, style, false, ex_style, dpi);
         let w = (rc.right - rc.left).min((work.right - work.left) * 9 / 10);
         let h = (rc.bottom - rc.top).min((work.bottom - work.top) * 9 / 10);
         let mut orc = RECT::default();
         let _ = GetWindowRect(owner, &mut orc);
-        let x = (orc.left + (orc.right - orc.left - w) / 2).clamp(work.left, (work.right - w).max(work.left));
-        let y = (orc.top + (orc.bottom - orc.top - h) / 2).clamp(work.top, (work.bottom - h).max(work.top));
+        let x = (orc.left + (orc.right - orc.left - w) / 2)
+            .clamp(work.left, (work.right - w).max(work.left));
+        let y = (orc.top + (orc.bottom - orc.top - h) / 2)
+            .clamp(work.top, (work.bottom - h).max(work.top));
         let _ = SetWindowPos(hwnd, None, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
 
         let content: Box<Box<dyn Dialog>> = Box::new(make(hwnd));
@@ -99,7 +125,10 @@ pub fn close(hwnd: HWND) {
 /// クライアント座標 (DIP) のポインター位置。
 pub fn point(hwnd: HWND, lparam: LPARAM) -> (f32, f32) {
     let s = scale(hwnd);
-    ((lparam.0 & 0xFFFF) as i16 as f32 / s, ((lparam.0 >> 16) & 0xFFFF) as i16 as f32 / s)
+    (
+        (lparam.0 & 0xFFFF) as i16 as f32 / s,
+        ((lparam.0 >> 16) & 0xFFFF) as i16 as f32 / s,
+    )
 }
 
 /// 現在のカーソル位置をクライアント座標 (DIP) で。
@@ -126,10 +155,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         if msg == WM_NCDESTROY && !ptr.is_null() {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             drop(Box::from_raw(ptr));
-        } else if !ptr.is_null() {
-            if let Some(result) = (*ptr).handle(hwnd, msg, wparam, lparam) {
-                return result;
-            }
+        } else if !ptr.is_null()
+            && let Some(result) = (*ptr).handle(hwnd, msg, wparam, lparam)
+        {
+            return result;
         }
         DefWindowProcW(hwnd, msg, wparam, lparam)
     }

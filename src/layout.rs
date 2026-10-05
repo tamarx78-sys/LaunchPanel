@@ -10,7 +10,11 @@ pub fn column_count(window_width: f64, column_width: f64, item_count: usize) -> 
         return 1;
     }
     let columns = ((window_width / column_width + 0.5).floor() as usize).max(1);
-    if item_count >= 1 { columns.min(item_count) } else { columns }
+    if item_count >= 1 {
+        columns.min(item_count)
+    } else {
+        columns
+    }
 }
 
 /// 列数に対応するウィンドウ幅 (スナップ先)。
@@ -19,14 +23,21 @@ pub fn snapped_width(columns: usize, column_width: f64) -> f64 {
 }
 
 /// 1列の幅を変更した時の新しいウィンドウ幅。現在の列数を維持する。
-pub fn width_for_column_width_change(current: f64, old_column: f64, new_column: f64, item_count: usize) -> f64 {
+pub fn width_for_column_width_change(
+    current: f64,
+    old_column: f64,
+    new_column: f64,
+    item_count: usize,
+) -> f64 {
     snapped_width(column_count(current, old_column, item_count), new_column)
 }
 
 /// 各列に割り当てる件数。割り切れない分は左の列から1件ずつ多く割り当てる。
 pub fn column_sizes(item_count: usize, columns: usize) -> Vec<usize> {
     let columns = columns.max(1);
-    (0..columns).map(|c| item_count / columns + usize::from(c < item_count % columns)).collect()
+    (0..columns)
+        .map(|c| item_count / columns + usize::from(c < item_count % columns))
+        .collect()
 }
 
 /// 配列上の位置から (列, 行) を求める。左列の上から下へ、次に右の列へ並べる。
@@ -76,7 +87,10 @@ mod tests {
     #[test]
     fn width_changes() {
         assert_eq!(snapped_width(3, 280.0), 840.0);
-        assert_eq!(width_for_column_width_change(840.0, 280.0, 400.0, 10), 1200.0);
+        assert_eq!(
+            width_for_column_width_change(840.0, 280.0, 400.0, 10),
+            1200.0
+        );
         assert_eq!(status_text(560.2, 599.6, 2), "560×600 2列");
     }
 }

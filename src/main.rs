@@ -1,7 +1,7 @@
-//! LaunchPanel3: 依存なしの単一 exe として再構築した常駐ランチャー (試作)。
+//! LaunchPanel 2: 依存なしの単一 exe として作り直した Windows 用の常駐ランチャー。
 //!
 //! Win32 のウィンドウを Direct2D / DirectWrite で自前描画する。OS 連携 (トレイ・ホットキー・
-//! アイコン・影・デスクトップ空白ダブルクリック) は LaunchPanel2 の lp_native から移植した。
+//! アイコン・影・デスクトップ空白ダブルクリック) は platform モジュールにまとめている。
 
 #![windows_subsystem = "windows"]
 
@@ -23,8 +23,8 @@ mod settings;
 mod ui;
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::System::Ole::OleInitialize;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Ole::OleInitialize;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::w;
 
@@ -93,7 +93,7 @@ fn create_window() -> Option<HWND> {
     // SAFETY: ウィンドウクラスの登録とウィンドウの生成
     unsafe {
         let instance = GetModuleHandleW(None).ok()?;
-        let class = w!("LaunchPanel3Window");
+        let class = w!("LaunchPanelWindow");
         let icon = LoadIconW(Some(instance.into()), windows::core::PCWSTR(1 as _)).ok();
         let wc = WNDCLASSEXW {
             cbSize: size_of::<WNDCLASSEXW>() as u32,
@@ -130,10 +130,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
     // SAFETY: GWLP_USERDATA には main で設定した App のポインタだけが入る
     unsafe {
         let app = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut App;
-        if !app.is_null() {
-            if let Some(result) = (*app).handle(msg, wparam, lparam) {
-                return result;
-            }
+        if !app.is_null()
+            && let Some(result) = (*app).handle(msg, wparam, lparam)
+        {
+            return result;
         }
         DefWindowProcW(hwnd, msg, wparam, lparam)
     }

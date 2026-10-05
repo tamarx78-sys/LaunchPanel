@@ -11,8 +11,8 @@ use windows::Win32::System::Com::{DVASPECT_CONTENT, FORMATETC, IDataObject, TYME
 use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
 use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
 use windows::Win32::System::Ole::{
-    CF_HDROP, CF_UNICODETEXT, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_NONE, IDropTarget, IDropTarget_Impl,
-    RegisterDragDrop, ReleaseStgMedium, RevokeDragDrop,
+    CF_HDROP, CF_UNICODETEXT, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_NONE,
+    IDropTarget, IDropTarget_Impl, RegisterDragDrop, ReleaseStgMedium, RevokeDragDrop,
 };
 use windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS;
 use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
@@ -34,7 +34,11 @@ struct DropTarget {
 
 /// `hwnd` をドロップ先として登録する。UI スレッドは OleInitialize 済みであること。
 pub fn register(hwnd: HWND) -> bool {
-    let target: IDropTarget = DropTarget { hwnd, accepted: Cell::new(false) }.into();
+    let target: IDropTarget = DropTarget {
+        hwnd,
+        accepted: Cell::new(false),
+    }
+    .into();
     // SAFETY: 自分のウィンドウへの登録 (OLE が参照を保持する)
     unsafe { RegisterDragDrop(hwnd, &target).is_ok() }
 }
@@ -60,7 +64,9 @@ impl DropTarget {
         let lparam = payload.map_or(0, |s| Box::into_raw(Box::new(s)) as isize);
         // SAFETY: 自分のウィンドウへの通知
         unsafe {
-            if PostMessageW(Some(self.hwnd), WM_APP_DROP, WPARAM(kind), LPARAM(lparam)).is_err() && lparam != 0 {
+            if PostMessageW(Some(self.hwnd), WM_APP_DROP, WPARAM(kind), LPARAM(lparam)).is_err()
+                && lparam != 0
+            {
                 drop(Box::from_raw(lparam as *mut String));
             }
         }
@@ -81,8 +87,15 @@ impl DropTarget {
 }
 
 impl IDropTarget_Impl for DropTarget_Impl {
-    fn DragEnter(&self, data: Ref<IDataObject>, _keys: MODIFIERKEYS_FLAGS, _pt: &POINTL, effect: *mut DROPEFFECT) -> Result<()> {
-        self.accepted.set(data.ok().is_ok_and(|d| extract(d).is_some()));
+    fn DragEnter(
+        &self,
+        data: Ref<IDataObject>,
+        _keys: MODIFIERKEYS_FLAGS,
+        _pt: &POINTL,
+        effect: *mut DROPEFFECT,
+    ) -> Result<()> {
+        self.accepted
+            .set(data.ok().is_ok_and(|d| extract(d).is_some()));
         // SAFETY: OLE が渡す有効なポインタ
         unsafe { *effect = self.effect(*effect) };
         if self.accepted.get() {
@@ -91,7 +104,12 @@ impl IDropTarget_Impl for DropTarget_Impl {
         Ok(())
     }
 
-    fn DragOver(&self, _keys: MODIFIERKEYS_FLAGS, _pt: &POINTL, effect: *mut DROPEFFECT) -> Result<()> {
+    fn DragOver(
+        &self,
+        _keys: MODIFIERKEYS_FLAGS,
+        _pt: &POINTL,
+        effect: *mut DROPEFFECT,
+    ) -> Result<()> {
         // SAFETY: OLE が渡す有効なポインタ
         unsafe { *effect = self.effect(*effect) };
         Ok(())
@@ -103,7 +121,13 @@ impl IDropTarget_Impl for DropTarget_Impl {
         Ok(())
     }
 
-    fn Drop(&self, data: Ref<IDataObject>, _keys: MODIFIERKEYS_FLAGS, _pt: &POINTL, effect: *mut DROPEFFECT) -> Result<()> {
+    fn Drop(
+        &self,
+        data: Ref<IDataObject>,
+        _keys: MODIFIERKEYS_FLAGS,
+        _pt: &POINTL,
+        effect: *mut DROPEFFECT,
+    ) -> Result<()> {
         let dropped = data.ok().ok().and_then(extract);
         self.accepted.set(dropped.is_some());
         // SAFETY: OLE が渡す有効なポインタ
@@ -159,11 +183,16 @@ fn extract(data: &IDataObject) -> Option<String> {
 
 fn is_url(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
-    !s.contains(char::is_whitespace) && (lower.starts_with("https://") || lower.starts_with("http://"))
+    !s.contains(char::is_whitespace)
+        && (lower.starts_with("https://") || lower.starts_with("http://"))
 }
 
 /// 指定した書式の HGLOBAL を `read` に渡して読み、媒体を解放する。
-fn hglobal<T>(data: &IDataObject, format: u16, read: impl FnOnce(*mut core::ffi::c_void) -> Option<T>) -> Option<T> {
+fn hglobal<T>(
+    data: &IDataObject,
+    format: u16,
+    read: impl FnOnce(*mut core::ffi::c_void) -> Option<T>,
+) -> Option<T> {
     let fmt = FORMATETC {
         cfFormat: format,
         ptd: std::ptr::null_mut(),

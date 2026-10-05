@@ -1,7 +1,8 @@
 //! LaunchPanel.json の設定モデルと読み書き。
 //!
 //! 読込は寛容に行い、欠落・型違い・範囲外の値は項目単位で既定値または最小値へ補正する
-//! (1項目の不正で全体を捨てない)。書き出しは LaunchPanel2 と同じキー・構造にする。
+//! (1項目の不正で全体を捨てない)。書き出しは v1 と同じキー・構造に、v2 で増えた項目を加える
+//! (v1 は知らない項目を無視するので、v2 の設定ファイルを v1 でも読める)。
 
 use std::path::{Path, PathBuf};
 
@@ -64,7 +65,13 @@ pub struct HotkeySettings {
 
 impl Default for HotkeySettings {
     fn default() -> Self {
-        Self { ctrl: true, alt: true, shift: true, win: false, key: 'M' }
+        Self {
+            ctrl: true,
+            alt: true,
+            shift: true,
+            win: false,
+            key: 'M',
+        }
     }
 }
 
@@ -218,8 +225,12 @@ fn read_settings(node: &Map<String, Value>, s: &mut Settings) {
             d.key = key;
         }
     }
-    s.background_image = string(node.get("background_image")).unwrap_or_default().to_owned();
-    s.backdrop = string(node.get("backdrop")).and_then(Backdrop::parse).unwrap_or_default();
+    s.background_image = string(node.get("background_image"))
+        .unwrap_or_default()
+        .to_owned();
+    s.backdrop = string(node.get("backdrop"))
+        .and_then(Backdrop::parse)
+        .unwrap_or_default();
     // 旧設定に項目が無い場合、背景画像があれば見た目を変えない (ぼかし・暗さなし)
     let has_image = !s.background_image.trim().is_empty();
     s.blur = percent(node.get("blur")).unwrap_or(if has_image { 0 } else { DEFAULT_BLUR });
@@ -247,7 +258,9 @@ fn read_items(array: &[Value]) -> Vec<Item> {
             }
             let name = string(obj.get("name")).filter(|n| !n.is_empty());
             Some(Item {
-                name: name.map(str::to_owned).unwrap_or_else(|| crate::items::default_name(path)),
+                name: name
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| crate::items::default_name(path)),
                 path: path.to_owned(),
             })
         })
@@ -372,7 +385,8 @@ impl Store {
                 Some((c, true)) => (c, LoadSource::MigratedArrayFormat),
                 Some((c, false)) => (c, LoadSource::Current),
                 None => {
-                    let backup = PathBuf::from(format!("{}{INVALID_BACKUP_SUFFIX}", current.display()));
+                    let backup =
+                        PathBuf::from(format!("{}{INVALID_BACKUP_SUFFIX}", current.display()));
                     if let Err(e) = std::fs::copy(&current, &backup) {
                         crate::log::write(&format!("不正な設定ファイルの退避に失敗しました: {e}"));
                     }
@@ -394,9 +408,13 @@ impl Store {
     pub fn save(&self, config: &Config) -> bool {
         let path = self.path();
         let temp = path.with_extension("json.tmp");
-        let result = std::fs::write(&temp, serialize(config)).and_then(|_| std::fs::rename(&temp, &path));
+        let result =
+            std::fs::write(&temp, serialize(config)).and_then(|_| std::fs::rename(&temp, &path));
         if let Err(e) = &result {
-            crate::log::write(&format!("設定の保存に失敗しました: {}: {e}", path.display()));
+            crate::log::write(&format!(
+                "設定の保存に失敗しました: {}: {e}",
+                path.display()
+            ));
             let _ = std::fs::remove_file(&temp);
         }
         result.is_ok()
@@ -407,7 +425,10 @@ fn read(path: &Path) -> Option<(Config, bool)> {
     match std::fs::read_to_string(path) {
         Ok(text) => parse(text.trim_start_matches('\u{feff}')),
         Err(e) => {
-            crate::log::write(&format!("設定の読込に失敗しました: {}: {e}", path.display()));
+            crate::log::write(&format!(
+                "設定の読込に失敗しました: {}: {e}",
+                path.display()
+            ));
             None
         }
     }
@@ -427,12 +448,25 @@ mod tests {
             shadow: false,
             shadow_opacity: 75,
         };
-        c.settings.hotkey = HotkeySettings { ctrl: false, alt: true, shift: false, win: true, key: 'Q' };
+        c.settings.hotkey = HotkeySettings {
+            ctrl: false,
+            alt: true,
+            shift: false,
+            win: true,
+            key: 'Q',
+        };
         c.settings.background_image = r"C:\bg.png".into();
-        c.settings.item_button =
-            ItemButtonSettings { background_color: Rgb(1, 2, 3), transparency: 40, text_color: Rgb(250, 251, 252), bold_text: true };
+        c.settings.item_button = ItemButtonSettings {
+            background_color: Rgb(1, 2, 3),
+            transparency: 40,
+            text_color: Rgb(250, 251, 252),
+            bold_text: true,
+        };
         c.settings.desktop_double_click = true;
-        c.items.push(Item { name: "Example".into(), path: r"C:\Path\To\Example.exe".into() });
+        c.items.push(Item {
+            name: "Example".into(),
+            path: r"C:\Path\To\Example.exe".into(),
+        });
         let (parsed, legacy) = parse(&serialize(&c)).unwrap();
         assert!(!legacy);
         assert_eq!(parsed, c);
@@ -455,7 +489,10 @@ mod tests {
         assert_eq!(c.settings.item_button, ItemButtonSettings::default());
         assert!(!c.settings.desktop_double_click);
         assert_eq!(c.settings.backdrop, Backdrop::Wallpaper);
-        assert_eq!((c.settings.blur, c.settings.tint), (DEFAULT_BLUR, DEFAULT_TINT));
+        assert_eq!(
+            (c.settings.blur, c.settings.tint),
+            (DEFAULT_BLUR, DEFAULT_TINT)
+        );
         assert_eq!(c.items.len(), 1);
     }
 
@@ -475,7 +512,13 @@ mod tests {
         assert_eq!(c.settings.hotkey.key, 'M');
         assert_eq!(c.settings.item_button.background_color, Rgb(60, 60, 60));
         assert_eq!(c.settings.item_button.transparency, 100);
-        assert_eq!(c.items, vec![Item { name: "a.exe".into(), path: r"C:\a.exe".into() }]);
+        assert_eq!(
+            c.items,
+            vec![Item {
+                name: "a.exe".into(),
+                path: r"C:\a.exe".into()
+            }]
+        );
     }
 
     #[test]
@@ -493,8 +536,24 @@ mod tests {
 
     #[test]
     fn column_width_is_clamped() {
-        assert_eq!(parse(r#"{"settings":{"window":{"width":9999}}}"#).unwrap().0.settings.window.width, 600.0);
-        assert_eq!(parse(r#"{"settings":{"window":{"width":10}}}"#).unwrap().0.settings.window.width, 200.0);
+        assert_eq!(
+            parse(r#"{"settings":{"window":{"width":9999}}}"#)
+                .unwrap()
+                .0
+                .settings
+                .window
+                .width,
+            600.0
+        );
+        assert_eq!(
+            parse(r#"{"settings":{"window":{"width":10}}}"#)
+                .unwrap()
+                .0
+                .settings
+                .window
+                .width,
+            200.0
+        );
     }
 
     #[test]
@@ -513,7 +572,7 @@ mod tests {
 
     #[test]
     fn reads_launchpanel2_output() {
-        // LaunchPanel2 (C#) が書いた形式をそのまま読める
+        // 以前の版が書いた形式 (整数の幅、内側サイズ、影の設定など) をそのまま読める
         let json = r#"{
   "settings": {
     "window": { "width": 280, "inner_width": 200, "inner_height": 436.67, "shadow": true, "shadow_opacity": 80 },
@@ -532,7 +591,11 @@ mod tests {
     }
 
     fn temp_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("lp3-test-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let dir = std::env::temp_dir().join(format!(
+            "lp3-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -546,21 +609,37 @@ mod tests {
         assert!(store.path().exists());
 
         std::fs::remove_file(store.path()).unwrap();
-        std::fs::write(dir.join(LEGACY_FILE_NAME), r#"[{"name":"Old","path":"old.exe"}]"#).unwrap();
+        std::fs::write(
+            dir.join(LEGACY_FILE_NAME),
+            r#"[{"name":"Old","path":"old.exe"}]"#,
+        )
+        .unwrap();
         let (c, source) = store.load();
         assert_eq!(source, LoadSource::MigratedLauncherJson);
         assert_eq!(c.items[0].name, "Old");
 
-        std::fs::write(store.path(), r#"{"items":[{"name":"New","path":"new.exe"}]}"#).unwrap();
+        std::fs::write(
+            store.path(),
+            r#"{"items":[{"name":"New","path":"new.exe"}]}"#,
+        )
+        .unwrap();
         let (c, source) = store.load();
-        assert_eq!(source, LoadSource::Current, "LaunchPanel.json が launcher.json より優先");
+        assert_eq!(
+            source,
+            LoadSource::Current,
+            "LaunchPanel.json が launcher.json より優先"
+        );
         assert_eq!(c.items[0].name, "New");
 
         std::fs::write(store.path(), "{broken").unwrap();
         let (c, source) = store.load();
         assert_eq!(source, LoadSource::RecoveredFromInvalid);
         assert!(c.items.is_empty());
-        assert_eq!(std::fs::read_to_string(dir.join(format!("{FILE_NAME}{INVALID_BACKUP_SUFFIX}"))).unwrap(), "{broken");
+        assert_eq!(
+            std::fs::read_to_string(dir.join(format!("{FILE_NAME}{INVALID_BACKUP_SUFFIX}")))
+                .unwrap(),
+            "{broken"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

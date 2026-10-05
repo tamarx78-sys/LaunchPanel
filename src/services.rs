@@ -2,12 +2,18 @@
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{
+    ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, WPARAM,
+};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
-use windows::Win32::System::Threading::{CreateEventW, CreateMutexW, INFINITE, SetEvent, WaitForSingleObject};
+use windows::Win32::System::Threading::{
+    CreateEventW, CreateMutexW, INFINITE, SetEvent, WaitForSingleObject,
+};
 use windows::Win32::UI::Shell::ShellExecuteW;
-use windows::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow, PostMessageW, SW_SHOWNORMAL};
+use windows::Win32::UI::WindowsAndMessaging::{
+    ASFW_ANY, AllowSetForegroundWindow, PostMessageW, SW_SHOWNORMAL,
+};
 use windows::core::{PCWSTR, w};
 
 use crate::platform::icon::{self, Pixels};
@@ -15,13 +21,18 @@ use crate::platform::wide::to_wide;
 
 // ───────────── 多重起動防止 ─────────────
 
+// v1 (egui 版) と同じ名前にする。どちらかが動いていれば、もう一方は起動せずに動いている方を表示する
 #[cfg(debug_assertions)]
-const INSTANCE_NAME: &str = r"Local\LaunchPanel3.Debug";
+const MUTEX_NAME: &str = r"Local\LaunchPanel_Debug_Mutex";
+#[cfg(debug_assertions)]
+const SHOW_EVENT_NAME: &str = r"Local\LaunchPanel_Debug_Show";
 #[cfg(not(debug_assertions))]
-const INSTANCE_NAME: &str = r"Local\LaunchPanel3";
+const MUTEX_NAME: &str = r"Local\LaunchPanel_Mutex";
+#[cfg(not(debug_assertions))]
+const SHOW_EVENT_NAME: &str = r"Local\LaunchPanel_Show";
 
 /// 同一ユーザーセッション内の多重起動防止。後発プロセスは既存側へ表示要求を送って終わる。
-/// デバッグ版は別名なので通常版と共存できる。LaunchPanel2 とも別名で、並べて比較できる。
+/// デバッグ版は別名なので通常版と共存できる。
 pub struct SingleInstance {
     show_event: HANDLE,
     pub is_primary: bool,
@@ -32,12 +43,16 @@ impl SingleInstance {
         // SAFETY: 名前付きカーネルオブジェクトの生成。プロセス終了まで保持する
         unsafe {
             // イベントを先に作る (後発が開く前に既存側が待機できるように)
-            let event_name = to_wide(&format!("{INSTANCE_NAME}.Show"));
-            let show_event = CreateEventW(None, false, false, PCWSTR(event_name.as_ptr())).unwrap_or_default();
-            let mutex_name = to_wide(&format!("{INSTANCE_NAME}.Instance"));
+            let event_name = to_wide(SHOW_EVENT_NAME);
+            let show_event =
+                CreateEventW(None, false, false, PCWSTR(event_name.as_ptr())).unwrap_or_default();
+            let mutex_name = to_wide(MUTEX_NAME);
             let _mutex = CreateMutexW(None, true, PCWSTR(mutex_name.as_ptr()));
             let is_primary = GetLastError() != ERROR_ALREADY_EXISTS;
-            Self { show_event, is_primary }
+            Self {
+                show_event,
+                is_primary,
+            }
         }
     }
 
@@ -56,11 +71,14 @@ impl SingleInstance {
         let hwnd = hwnd.0 as isize;
         std::thread::Builder::new()
             .name("lp-single-instance".into())
-            .spawn(move || loop {
-                // SAFETY: プロセス終了まで有効なイベントを待つ
-                unsafe {
-                    WaitForSingleObject(HANDLE(event as *mut _), INFINITE);
-                    let _ = PostMessageW(Some(HWND(hwnd as *mut _)), message, WPARAM(0), LPARAM(0));
+            .spawn(move || {
+                loop {
+                    // SAFETY: プロセス終了まで有効なイベントを待つ
+                    unsafe {
+                        WaitForSingleObject(HANDLE(event as *mut _), INFINITE);
+                        let _ =
+                            PostMessageW(Some(HWND(hwnd as *mut _)), message, WPARAM(0), LPARAM(0));
+                    }
                 }
             })
             .ok();
@@ -76,7 +94,11 @@ pub fn launch(hwnd: HWND, path: &str) -> bool {
     // ローカルのファイルは自身のフォルダーを作業フォルダーにする
     let dir = std::path::Path::new(&target)
         .is_file()
-        .then(|| std::path::Path::new(&target).parent().map(|p| to_wide(&p.to_string_lossy())))
+        .then(|| {
+            std::path::Path::new(&target)
+                .parent()
+                .map(|p| to_wide(&p.to_string_lossy()))
+        })
         .flatten();
     // SAFETY: 文字列は呼び出し中有効
     let result = unsafe {
@@ -91,7 +113,10 @@ pub fn launch(hwnd: HWND, path: &str) -> bool {
     };
     let ok = result.0 as isize > 32;
     if !ok {
-        crate::log::write(&format!("起動に失敗しました: {target} (コード {})", result.0 as isize));
+        crate::log::write(&format!(
+            "起動に失敗しました: {target} (コード {})",
+            result.0 as isize
+        ));
     }
     ok
 }
@@ -104,7 +129,11 @@ fn expand_env(path: &str) -> String {
     let mut buf = vec![0u16; 32768];
     // SAFETY: バッファ長はスライスで渡す
     let n = unsafe { ExpandEnvironmentStringsW(PCWSTR(src.as_ptr()), Some(&mut buf)) } as usize;
-    if n == 0 || n > buf.len() { path.to_owned() } else { String::from_utf16_lossy(&buf[..n - 1]) }
+    if n == 0 || n > buf.len() {
+        path.to_owned()
+    } else {
+        String::from_utf16_lossy(&buf[..n - 1])
+    }
 }
 
 // ───────────── アイコン ─────────────
@@ -135,12 +164,16 @@ impl IconLoader {
                     }
                     // SAFETY: メッセージの送信のみ
                     unsafe {
-                        let _ = PostMessageW(Some(HWND(hwnd as *mut _)), message, WPARAM(0), LPARAM(0));
+                        let _ =
+                            PostMessageW(Some(HWND(hwnd as *mut _)), message, WPARAM(0), LPARAM(0));
                     }
                 }
             })
             .ok();
-        Self { requests: req_tx, results: res_rx }
+        Self {
+            requests: req_tx,
+            results: res_rx,
+        }
     }
 
     pub fn request(&self, id: u64, path: &str) {
