@@ -1,3 +1,13 @@
-target/
-run/
+/target/
+/LaunchPanel.json
+/launcher.json
+LaunchPanel.log*
+*.pdb
+*.exe
+*.msi
 *.lnk
+/run/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
