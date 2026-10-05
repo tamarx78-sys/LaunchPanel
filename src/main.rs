@@ -6,13 +6,17 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod color;
 mod config;
+mod dialog;
 mod items;
 mod layout;
 mod log;
 mod platform;
 mod render;
 mod services;
+mod settings;
+mod ui;
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};

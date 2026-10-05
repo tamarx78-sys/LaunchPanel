@@ -38,6 +38,10 @@ impl Rect {
         px >= self.x && px < self.x + self.w && py >= self.y && py < self.y + self.h
     }
 
+    pub fn contains_point(&self, (px, py): (f32, f32)) -> bool {
+        self.contains(px, py)
+    }
+
     pub fn inset(&self, dx: f32, dy: f32) -> Self {
         Self::new(self.x + dx, self.y + dy, (self.w - 2.0 * dx).max(0.0), (self.h - 2.0 * dy).max(0.0))
     }
@@ -73,6 +77,14 @@ pub enum TextStyle {
     Small,
     /// 記号フォントのアイコン (中央寄せ)
     Glyph,
+    /// 設定画面などの見出し (左寄せ・やや大きく太い)
+    Heading,
+    /// 項目名など (左寄せ・縦中央・末尾省略)
+    Label,
+    /// ボタンや値の表示 (中央寄せ・縦中央・末尾省略)
+    Value,
+    /// 補足説明 (左寄せ・上揃え・折り返し)
+    Caption,
 }
 
 pub struct Gfx {
@@ -85,6 +97,10 @@ pub struct Gfx {
     item_bold: IDWriteTextFormat,
     small: IDWriteTextFormat,
     glyph: IDWriteTextFormat,
+    heading: IDWriteTextFormat,
+    label: IDWriteTextFormat,
+    value: IDWriteTextFormat,
+    caption: IDWriteTextFormat,
     /// レンダーターゲットを作り直すたびに増える。ビットマップはこの世代のものだけ有効
     pub generation: u64,
 }
@@ -97,23 +113,89 @@ impl Gfx {
             let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
             let wic: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
 
-            let item = text_format(&dwrite, w!("Segoe UI"), DWRITE_FONT_WEIGHT_NORMAL, 13.0, false)?;
-            let item_bold = text_format(&dwrite, w!("Segoe UI"), DWRITE_FONT_WEIGHT_BOLD, 13.0, false)?;
-            let small = text_format(&dwrite, w!("Segoe UI"), DWRITE_FONT_WEIGHT_NORMAL, 12.0, true)?;
+            let ui = w!("Segoe UI");
+            let (left, center) = (DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_CENTER);
+            let item = text_format(&dwrite, ui, DWRITE_FONT_WEIGHT_NORMAL, 13.0, left, false)?;
+            let item_bold = text_format(&dwrite, ui, DWRITE_FONT_WEIGHT_BOLD, 13.0, left, false)?;
+            let small = text_format(&dwrite, ui, DWRITE_FONT_WEIGHT_NORMAL, 12.0, center, false)?;
             let glyph_family = if has_font(&dwrite, w!("Segoe Fluent Icons")) {
                 w!("Segoe Fluent Icons")
             } else {
                 w!("Segoe MDL2 Assets")
             };
-            let glyph = text_format(&dwrite, glyph_family, DWRITE_FONT_WEIGHT_NORMAL, 14.0, true)?;
-            for f in [&item, &item_bold] {
+            let glyph = text_format(&dwrite, glyph_family, DWRITE_FONT_WEIGHT_NORMAL, 14.0, center, false)?;
+            let heading = text_format(&dwrite, ui, DWRITE_FONT_WEIGHT_SEMI_BOLD, 17.0, left, false)?;
+            let label = text_format(&dwrite, ui, DWRITE_FONT_WEIGHT_NORMAL, 13.0, left, false)?;
+            let value = text_format(&dwrite, ui, DWRITE_FONT_WEIGHT_NORMAL, 13.0, center, false)?;
+            let caption = text_format(&dwrite, ui, DWRITE_FONT_WEIGHT_NORMAL, 12.0, left, true)?;
+            for f in [&item, &item_bold, &label, &value, &small] {
                 let sign = dwrite.CreateEllipsisTrimmingSign(f)?;
                 f.SetTrimming(
                     &DWRITE_TRIMMING { granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER, delimiter: 0, delimiterCount: 0 },
                     &sign,
                 )?;
             }
-            Ok(Self { d2d, dwrite, wic, target: None, brush: None, item, item_bold, small, glyph, generation: 0 })
+            Ok(Self {
+                d2d,
+                dwrite,
+                wic,
+                target: None,
+                brush: None,
+                item,
+                item_bold,
+                small,
+                glyph,
+                heading,
+                label,
+                value,
+                caption,
+                generation: 0,
+            })
+        }
+    }
+
+    fn format(&self, style: TextStyle) -> &IDWriteTextFormat {
+        match style {
+            TextStyle::Item => &self.item,
+            TextStyle::ItemBold => &self.item_bold,
+            TextStyle::Small => &self.small,
+            TextStyle::Glyph => &self.glyph,
+            TextStyle::Heading => &self.heading,
+            TextStyle::Label => &self.label,
+            TextStyle::Value => &self.value,
+            TextStyle::Caption => &self.caption,
+        }
+    }
+
+    /// 文字列を `max_width` 以内に配置した時の (幅, 高さ)。折り返す書式では高さが伸びる。
+    pub fn measure(&self, s: &str, style: TextStyle, max_width: f32) -> (f32, f32) {
+        let text: Vec<u16> = s.encode_utf16().collect();
+        // SAFETY: テキストレイアウトの生成と計測のみ
+        unsafe {
+            let Ok(layout) = self.dwrite.CreateTextLayout(&text, self.format(style), max_width, 10_000.0) else {
+                return (0.0, 0.0);
+            };
+            let mut m = DWRITE_TEXT_METRICS::default();
+            if layout.GetMetrics(&mut m).is_err() {
+                return (0.0, 0.0);
+            }
+            (m.widthIncludingTrailingWhitespace, m.height)
+        }
+    }
+
+    /// 画像ファイルの寸法 (ピクセル)。読めなければ None。
+    pub fn image_size(&self, path: &str) -> Option<(u32, u32)> {
+        let wide = to_wide(path);
+        // SAFETY: WIC による寸法の取得のみ
+        unsafe {
+            let decoder = self
+                .wic
+                .CreateDecoderFromFilename(PCWSTR(wide.as_ptr()), None, GENERIC_READ, WICDecodeMetadataCacheOnDemand)
+                .ok()?;
+            let frame = decoder.GetFrame(0).ok()?;
+            let (mut w, mut h) = (0, 0);
+            frame.GetSize(&mut w, &mut h).ok()?;
+            Some((w, h))
         }
     }
 
@@ -200,6 +282,13 @@ impl Gfx {
         }
     }
 
+    pub fn fill_rect(&self, r: Rect, color: Color) {
+        if let (Some(t), Some(b)) = (&self.target, self.brush(color)) {
+            // SAFETY: 描画中のターゲットへの描画
+            unsafe { t.FillRectangle(&r.d2d(), b) };
+        }
+    }
+
     pub fn stroke_round(&self, r: Rect, radius: f32, color: Color, width: f32) {
         if let (Some(t), Some(b)) = (&self.target, self.brush(color)) {
             // 線の中心が矩形の内側に来るようにする
@@ -210,12 +299,7 @@ impl Gfx {
     }
 
     pub fn text(&self, s: &str, r: Rect, color: Color, style: TextStyle) {
-        let format = match style {
-            TextStyle::Item => &self.item,
-            TextStyle::ItemBold => &self.item_bold,
-            TextStyle::Small => &self.small,
-            TextStyle::Glyph => &self.glyph,
-        };
+        let format = self.format(style);
         if let (Some(t), Some(b)) = (&self.target, self.brush(color)) {
             let text: Vec<u16> = s.encode_utf16().collect();
             // SAFETY: 描画中のターゲットへの描画
@@ -227,16 +311,7 @@ impl Gfx {
 
     /// 上部・下部の小さな文字の描画幅 (DIP)。
     pub fn measure_small(&self, s: &str) -> f32 {
-        let text: Vec<u16> = s.encode_utf16().collect();
-        // SAFETY: テキストレイアウトの生成と計測のみ
-        unsafe {
-            let Ok(layout) = self.dwrite.CreateTextLayout(&text, &self.small, 10_000.0, 100.0) else { return 0.0 };
-            let mut m = DWRITE_TEXT_METRICS::default();
-            if layout.GetMetrics(&mut m).is_err() {
-                return 0.0;
-            }
-            m.widthIncludingTrailingWhitespace
-        }
+        self.measure(s, TextStyle::Small, 10_000.0).0
     }
 
     /// 中心 (cx, cy) を軸に `degrees` 回転させて描く範囲を開始する。
@@ -345,16 +420,21 @@ unsafe fn text_format(
     family: PCWSTR,
     weight: DWRITE_FONT_WEIGHT,
     size: f32,
-    centered: bool,
+    align: DWRITE_TEXT_ALIGNMENT,
+    wrap: bool,
 ) -> Result<IDWriteTextFormat> {
     // SAFETY: テキスト書式の生成
     unsafe {
         let f = dwrite.CreateTextFormat(family, None, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, w!("ja-jp"))?;
-        f.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
-        f.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
-        if centered {
-            f.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+        if wrap {
+            // 折り返す文章は上揃え
+            f.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)?;
+            f.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
+        } else {
+            f.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+            f.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
         }
+        f.SetTextAlignment(align)?;
         Ok(f)
     }
 }

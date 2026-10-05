@@ -62,8 +62,6 @@ const BG: Color = Color::rgba(0x22, 0x23, 0x28, 0xFF);
 const PILL: Color = Color::rgba(0x14, 0x15, 0x18, 0xB0);
 const PILL_HOVER: Color = Color::rgba(0x3A, 0x3C, 0x44, 0xE0);
 const OVERLAY_TEXT: Color = Color::rgba(0xE8, 0xE8, 0xEC, 0xFF);
-const HOVER_OUTLINE: Color = Color::rgba(0x6C, 0xB4, 0xFF, 0xFF);
-const HOVER_FILL: Color = Color::rgba(0xFF, 0xFF, 0xFF, 0x24);
 
 const DIR_LEFT: u8 = 1;
 const DIR_TOP: u8 = 2;
@@ -144,6 +142,7 @@ pub struct App {
 
     pinned: bool,
     modal: u32,
+    settings_open: bool,
     shown_at: Instant,
     /// 復帰直後の猶予中に前面を奪われた。猶予の終わりに取り戻す
     reclaim_focus: bool,
@@ -189,6 +188,7 @@ impl App {
             resize: None,
             pinned: false,
             modal: 0,
+            settings_open: false,
             shown_at: Instant::now(),
             reclaim_focus: false,
             exiting: false,
@@ -596,7 +596,7 @@ impl App {
                 self.pinned = !self.pinned;
                 self.invalidate();
             }
-            Hit::Gear => self.show_footer("設定画面は次の段階で実装予定です"),
+            Hit::Gear => self.open_settings(),
             _ => {}
         }
     }
@@ -797,6 +797,77 @@ impl App {
         self.save();
     }
 
+    // ───────────── 設定画面 ─────────────
+
+    /// 設定画面を開く。既に開いていれば何もしない。
+    fn open_settings(&mut self) {
+        if self.settings_open {
+            return;
+        }
+        self.settings_open = crate::settings::open(self.hwnd, &self.settings, self.fallback.as_ref());
+        if self.settings_open {
+            // 設定画面を操作している間は本体を自動非表示にしない
+            self.modal += 1;
+        }
+    }
+
+    fn on_settings_closed(&mut self, ok: bool) {
+        self.settings_open = false;
+        self.modal = self.modal.saturating_sub(1);
+        match crate::settings::take_result().filter(|_| ok) {
+            Some(new) => self.apply_settings(new),
+            // キャンセル: 試し表示した影を保存済みの値へ戻す
+            None => self.apply_shadow(),
+        }
+    }
+
+    fn apply_settings(&mut self, new: Settings) {
+        let old = std::mem::replace(&mut self.settings, new);
+        let scale = self.scale() as f64;
+        if old.window.width != self.settings.window.width {
+            // 現在の列数を維持したまま、新しい列幅に合わせてウィンドウ幅を変える
+            let width = layout::width_for_column_width_change(
+                self.width as f64,
+                old.window.width,
+                self.settings.window.width,
+                self.entries.len(),
+            );
+            self.settings.window.inner_width = Some(width);
+            self.settings.window.inner_height.get_or_insert((self.height as f64 * 100.0).round() / 100.0);
+            let mut rc = RECT::default();
+            // SAFETY: 自分のウィンドウのリサイズ
+            unsafe {
+                let _ = GetWindowRect(self.hwnd, &mut rc);
+                let _ = SetWindowPos(
+                    self.hwnd,
+                    None,
+                    0,
+                    0,
+                    (width * scale).round() as i32,
+                    rc.bottom - rc.top,
+                    SWP_NOZORDER | SWP_NOMOVE | SWP_NOACTIVATE,
+                );
+            }
+        }
+        // 背景画像は次の描画で読み直す
+        self.background_tried = 0;
+        self.apply_shadow();
+        if old.desktop_double_click != self.settings.desktop_double_click {
+            if self.settings.desktop_double_click {
+                if desktop::lp_desktop_start(on_desktop_double_click) == 0 {
+                    crate::log::write("デスクトップのダブルクリック監視を開始できませんでした。");
+                }
+            } else {
+                desktop::lp_desktop_stop();
+            }
+        }
+        self.save();
+        self.relayout(false);
+        if old.hotkey != self.settings.hotkey {
+            self.show_footer("ホットキーの変更は次回起動時に有効になります");
+        }
+    }
+
     // ───────────── 保存・通知 ─────────────
 
     fn save(&mut self) {
@@ -939,31 +1010,13 @@ impl App {
     }
 
     fn draw_button(&self, e: &Entry, r: Rect, hovered: bool, opacity: f32) {
-        let s = &self.settings.item_button;
-        let gfx = &self.gfx;
-        let bg = s.background_color;
-        gfx.fill_round(r, 5.0, Color::rgba(bg.0, bg.1, bg.2, 255).with_alpha(s.background_alpha() * opacity));
-        let bitmap = e.bitmap.as_ref().map(|(_, b)| b).or(if e.icon_failed || e.icon.is_none() {
+        // アイコンが取れなかったアイテムは LaunchPanel のアイコンで代用する
+        let icon = e.bitmap.as_ref().map(|(_, b)| b).or(if e.icon_failed || e.icon.is_none() {
             self.fallback_bitmap.as_ref().map(|(_, b)| b)
         } else {
             None
         });
-        if let Some(b) = bitmap {
-            gfx.bitmap(b, Rect::new(r.x + 8.0, r.y + (BUTTON_H - ICON) / 2.0, ICON, ICON), opacity);
-        }
-        let tc = s.text_color;
-        let style = if s.bold_text { TextStyle::ItemBold } else { TextStyle::Item };
-        gfx.text(
-            &e.item.name,
-            Rect::new(r.x + 36.0, r.y, (r.w - 44.0).max(0.0), BUTTON_H),
-            Color::rgba(tc.0, tc.1, tc.2, 255).with_alpha(opacity),
-            style,
-        );
-        if hovered {
-            // 明るい輪郭と薄い白の重ねで、背景の明暗によらず識別できるようにする
-            gfx.fill_round(r, 5.0, HOVER_FILL.with_alpha(HOVER_FILL.3 * opacity));
-            gfx.stroke_round(r, 5.0, HOVER_OUTLINE.with_alpha(opacity), 2.0);
-        }
+        crate::ui::item_button(&self.gfx, r, &e.item.name, icon, &self.settings.item_button, hovered, opacity);
     }
 
     /// レンダーターゲットの世代が変わったビットマップを作り直す。
@@ -1116,11 +1169,13 @@ impl App {
             WM_APP_SHOW => self.show(),
             WM_APP_ICON => self.on_icons(),
             WM_APP_DESKTOP => self.show_at(wparam.0 as i32, lparam.0 as i32),
+            crate::settings::WM_APP_SETTINGS => self.on_settings_closed(wparam.0 == 1),
             WM_APP_SHELL => match wparam.0 as u32 {
                 1 | 4 => self.show(),
                 2 => {
+                    // 設定画面は本体に所有させるので、非表示なら先に復帰する
                     self.show();
-                    self.show_footer("設定画面は次の段階で実装予定です");
+                    self.open_settings();
                 }
                 3 => self.exit(),
                 _ => {}

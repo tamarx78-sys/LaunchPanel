@@ -25,6 +25,7 @@ use windows::core::{PCWSTR, PWSTR, w};
 
 use crate::platform::wide::to_wide;
 
+#[derive(Clone)]
 pub struct Pixels {
     pub width: i32,
     pub height: i32,

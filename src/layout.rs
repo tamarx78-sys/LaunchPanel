@@ -18,6 +18,11 @@ pub fn snapped_width(columns: usize, column_width: f64) -> f64 {
     (columns.max(1) as f64 * column_width).max(MIN_INNER_SIZE)
 }
 
+/// 1列の幅を変更した時の新しいウィンドウ幅。現在の列数を維持する。
+pub fn width_for_column_width_change(current: f64, old_column: f64, new_column: f64, item_count: usize) -> f64 {
+    snapped_width(column_count(current, old_column, item_count), new_column)
+}
+
 /// 各列に割り当てる件数。割り切れない分は左の列から1件ずつ多く割り当てる。
 pub fn column_sizes(item_count: usize, columns: usize) -> Vec<usize> {
     let columns = columns.max(1);
@@ -71,6 +76,7 @@ mod tests {
     #[test]
     fn width_changes() {
         assert_eq!(snapped_width(3, 280.0), 840.0);
+        assert_eq!(width_for_column_width_change(840.0, 280.0, 400.0, 10), 1200.0);
         assert_eq!(status_text(560.2, 599.6, 2), "560×600 2列");
     }
 }
