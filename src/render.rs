@@ -375,6 +375,29 @@ impl Gfx {
         }
     }
 
+    /// ビットマップの一部 `src` (x, y, w, h: ビットマップの画素) を `dest` へ引き伸ばして描く。
+    /// `src` がビットマップの外にはみ出す分は描かない (描き先もその割合で縮める)。
+    pub fn bitmap_part(&self, bmp: &ID2D1Bitmap, dest: Rect, src: (f32, f32, f32, f32)) {
+        let Some(t) = &self.target else { return };
+        let (sx, sy, sw, sh) = src;
+        if sw <= 0.0 || sh <= 0.0 {
+            return;
+        }
+        // SAFETY: 描画中のターゲットへの描画
+        unsafe {
+            let size = bmp.GetSize();
+            let (x0, y0) = (sx.max(0.0), sy.max(0.0));
+            let (x1, y1) = ((sx + sw).min(size.width), (sy + sh).min(size.height));
+            if x1 <= x0 || y1 <= y0 {
+                return;
+            }
+            let (kx, ky) = (dest.w / sw, dest.h / sh);
+            let d = Rect::new(dest.x + (x0 - sx) * kx, dest.y + (y0 - sy) * ky, (x1 - x0) * kx, (y1 - y0) * ky);
+            let s = D2D_RECT_F { left: x0, top: y0, right: x1, bottom: y1 };
+            t.DrawBitmap(bmp, Some(&d.d2d()), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, Some(&s));
+        }
+    }
+
     /// BGRA (乗算済み) の画素からビットマップを作る。
     pub fn create_bitmap(&self, p: &Pixels) -> Option<ID2D1Bitmap> {
         let t = self.target.as_ref()?;

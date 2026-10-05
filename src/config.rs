@@ -95,14 +95,68 @@ impl ItemButtonSettings {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Default)]
+pub const DEFAULT_BLUR: i32 = 40;
+pub const DEFAULT_TINT: i32 = 35;
+
+/// 背景画像を設定していない時の背景。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Backdrop {
+    /// 単色
+    None,
+    /// デスクトップの壁紙のウィンドウの裏にあたる部分をぼかして敷く (ぼかしの強さを調整できる)
+    #[default]
+    Wallpaper,
+    /// Windows 標準のアクリル (裏のウィンドウも透けて見える。ぼかしの強さは OS が決める)
+    Acrylic,
+}
+
+impl Backdrop {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Wallpaper => "wallpaper",
+            Self::Acrylic => "acrylic",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "none" => Some(Self::None),
+            "wallpaper" => Some(Self::Wallpaper),
+            "acrylic" => Some(Self::Acrylic),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub window: WindowSettings,
     pub hotkey: HotkeySettings,
     /// 空文字は「背景画像なし」
     pub background_image: String,
+    pub backdrop: Backdrop,
+    /// ぼかしの強さ (0～100)。壁紙ぼかしと背景画像に効く
+    pub blur: i32,
+    /// 背景に重ねる暗さ (0～100)
+    pub tint: i32,
     pub item_button: ItemButtonSettings,
     pub desktop_double_click: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            window: WindowSettings::default(),
+            hotkey: HotkeySettings::default(),
+            background_image: String::new(),
+            backdrop: Backdrop::default(),
+            blur: DEFAULT_BLUR,
+            tint: DEFAULT_TINT,
+            item_button: ItemButtonSettings::default(),
+            desktop_double_click: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -165,6 +219,11 @@ fn read_settings(node: &Map<String, Value>, s: &mut Settings) {
         }
     }
     s.background_image = string(node.get("background_image")).unwrap_or_default().to_owned();
+    s.backdrop = string(node.get("backdrop")).and_then(Backdrop::parse).unwrap_or_default();
+    // 旧設定に項目が無い場合、背景画像があれば見た目を変えない (ぼかし・暗さなし)
+    let has_image = !s.background_image.trim().is_empty();
+    s.blur = percent(node.get("blur")).unwrap_or(if has_image { 0 } else { DEFAULT_BLUR });
+    s.tint = percent(node.get("tint")).unwrap_or(if has_image { 0 } else { DEFAULT_TINT });
     if let Some(Value::Object(b)) = node.get("item_button") {
         let d = &mut s.item_button;
         d.background_color = rgb(b.get("background_color")).unwrap_or(d.background_color);
@@ -204,6 +263,11 @@ pub fn valid_hotkey_key(key: &str) -> Option<char> {
 /// 有限の数値のみ受け付ける (文字列・NaN・無限大は None)。
 fn number(v: Option<&Value>) -> Option<f64> {
     v?.as_f64().filter(|d| d.is_finite())
+}
+
+/// 0～100 へ丸めた整数。数値でなければ None。
+fn percent(v: Option<&Value>) -> Option<i32> {
+    number(v).map(|n| n.clamp(0.0, 100.0).round() as i32)
 }
 
 fn boolean(v: Option<&Value>) -> Option<bool> {
@@ -253,6 +317,9 @@ pub fn serialize(config: &Config) -> String {
                 "key": s.hotkey.key.to_string(),
             },
             "background_image": s.background_image,
+            "backdrop": s.backdrop.as_str(),
+            "blur": s.blur,
+            "tint": s.tint,
             "item_button": {
                 "background_color": [b.background_color.0, b.background_color.1, b.background_color.2],
                 "transparency": b.transparency,
@@ -387,6 +454,8 @@ mod tests {
         assert_eq!(c.settings.hotkey.key, 'K');
         assert_eq!(c.settings.item_button, ItemButtonSettings::default());
         assert!(!c.settings.desktop_double_click);
+        assert_eq!(c.settings.backdrop, Backdrop::Wallpaper);
+        assert_eq!((c.settings.blur, c.settings.tint), (DEFAULT_BLUR, DEFAULT_TINT));
         assert_eq!(c.items.len(), 1);
     }
 
@@ -407,6 +476,19 @@ mod tests {
         assert_eq!(c.settings.item_button.background_color, Rgb(60, 60, 60));
         assert_eq!(c.settings.item_button.transparency, 100);
         assert_eq!(c.items, vec![Item { name: "a.exe".into(), path: r"C:\a.exe".into() }]);
+    }
+
+    #[test]
+    fn backdrop_values() {
+        // 背景画像のある旧設定は、ぼかし・暗さなしで今までと同じ見た目
+        let (c, _) = parse(r#"{"settings":{"background_image":"C:\bg.png"}}"#).unwrap();
+        assert_eq!((c.settings.blur, c.settings.tint), (0, 0));
+        let (c, _) = parse(r#"{"settings":{"backdrop":"acrylic","blur":150,"tint":-3}}"#).unwrap();
+        assert_eq!(c.settings.backdrop, Backdrop::Acrylic);
+        assert_eq!((c.settings.blur, c.settings.tint), (100, 0));
+        let (c, _) = parse(r#"{"settings":{"backdrop":"glass","blur":"x"}}"#).unwrap();
+        assert_eq!(c.settings.backdrop, Backdrop::Wallpaper);
+        assert_eq!(c.settings.blur, DEFAULT_BLUR);
     }
 
     #[test]

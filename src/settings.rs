@@ -23,8 +23,9 @@ use windows::Win32::UI::Shell::{DragFinish, DragQueryFileW, FileOpenDialog, HDRO
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
+use crate::appearance::Look;
 use crate::color::{self, Hsv};
-use crate::config::{ItemButtonSettings, MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH, Rgb, Settings};
+use crate::config::{Backdrop, ItemButtonSettings, MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH, Rgb, Settings};
 use crate::dialog::{self, Dialog};
 use crate::platform::icon::Pixels;
 use crate::platform::shadow;
@@ -33,6 +34,8 @@ use crate::ui::{self, State};
 
 /// 設定画面が閉じた (wParam: OK なら 1)。結果は [`take_result`] で受け取る。
 pub const WM_APP_SETTINGS: u32 = WM_APP + 14;
+/// 背景の試し表示を更新した。値は [`preview_look`] で受け取る。
+pub const WM_APP_PREVIEW: u32 = WM_APP + 16;
 
 const MAX_IMAGE: u32 = 2000;
 const MARGIN: f32 = 24.0;
@@ -44,6 +47,32 @@ const SV_H: f32 = 150.0;
 
 thread_local! {
     static RESULT: RefCell<Option<Settings>> = const { RefCell::new(None) };
+    static PREVIEW: RefCell<Option<Look>> = const { RefCell::new(None) };
+}
+
+/// Windows の「透明効果」が有効か。無効だとアクリルは単色になる。
+fn transparency_enabled() -> bool {
+    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+    let mut value = 1u32;
+    let mut size = 4u32;
+    // SAFETY: 出力バッファの大きさを渡している
+    unsafe {
+        let _ = RegGetValueW(
+            HKEY_CURRENT_USER,
+            w!(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"),
+            w!("EnableTransparency"),
+            RRF_RT_REG_DWORD,
+            None,
+            Some(&mut value as *mut _ as *mut _),
+            Some(&mut size),
+        );
+    }
+    value != 0
+}
+
+/// 設定画面で編集中の背景 (本体の試し表示用)。
+pub fn preview_look() -> Option<Look> {
+    PREVIEW.with(|p| p.borrow().clone())
 }
 
 /// OK で閉じた時の設定を受け取る。
@@ -69,6 +98,9 @@ enum T {
     DropZone,
     Browse,
     Clear,
+    BackdropKind(usize),
+    Blur,
+    Tint,
     BgColor,
     Transparency,
     TextColor,
@@ -240,6 +272,31 @@ impl SettingsDialog {
                 ui::MUTED,
             ),
         }
+        // 画像がない時の背景 (なし / 壁紙ぼかし / アクリル)
+        l.texts.push(("画像がない時の背景".into(), Rect::new(MARGIN, y, cw, ROW), ui::TEXT, TextStyle::Label));
+        let mut x = right;
+        for (i, w) in [86.0, 100.0, 60.0].into_iter().enumerate().rev() {
+            x -= w;
+            l.controls.push((T::BackdropKind(i), Rect::new(x, y + (ROW - CTRL_H) / 2.0, w, CTRL_H)));
+            x -= 6.0;
+        }
+        y += ROW;
+        slider_row(&mut l, &mut y, "ぼかしの強さ", T::Blur, self.draft.blur);
+        slider_row(&mut l, &mut y, "暗さ", T::Tint, self.draft.tint);
+        caption(
+            &mut l,
+            &mut y,
+            "ぼかしの強さは壁紙ぼかしと背景画像に効きます。アクリルは裏のウィンドウも透けて見えますが、ぼかしの強さは Windows が決めます (Windows 11 のみ。使えない環境では壁紙ぼかしになります)。",
+            ui::MUTED,
+        );
+        if self.draft.backdrop == Backdrop::Acrylic && !transparency_enabled() {
+            caption(
+                &mut l,
+                &mut y,
+                "Windows の「透明効果」がオフのため、アクリルは単色で表示されます (設定 > 個人用設定 > 色 > 透明効果)。",
+                ui::WARNING,
+            );
+        }
         y += 12.0;
 
         // 3. ボタン
@@ -348,6 +405,8 @@ impl SettingsDialog {
     fn enabled(&self, t: T) -> bool {
         match t {
             T::ShadowOpacity => self.draft.window.shadow,
+            // ぼかしは壁紙ぼかしか背景画像の時だけ効く
+            T::Blur => !self.draft.background_image.is_empty() || self.draft.backdrop == Backdrop::Wallpaper,
             T::Clear => !self.draft.background_image.is_empty(),
             T::Modifier(3) => false, // Win は現在のバージョンでは変更不可
             _ => true,
@@ -355,6 +414,17 @@ impl SettingsDialog {
     }
 
     // ───────────── 値の変更 ─────────────
+
+    /// 編集中の背景を本体へ試し表示する。
+    fn preview_look(&self) {
+        let d = &self.draft;
+        let look = Look { image: d.background_image.clone(), backdrop: d.backdrop, blur: d.blur, tint: d.tint };
+        PREVIEW.with(|p| *p.borrow_mut() = Some(look));
+        // SAFETY: 本体への通知
+        unsafe {
+            let _ = PostMessageW(Some(self.owner), WM_APP_PREVIEW, WPARAM(0), LPARAM(0));
+        }
+    }
 
     fn preview_shadow(&self) {
         let w = &self.draft.window;
@@ -369,6 +439,14 @@ impl SettingsDialog {
             T::ShadowOpacity => {
                 self.draft.window.shadow_opacity = value;
                 self.preview_shadow();
+            }
+            T::Blur => {
+                self.draft.blur = value;
+                self.preview_look();
+            }
+            T::Tint => {
+                self.draft.tint = value;
+                self.preview_look();
             }
             T::Transparency => self.draft.item_button.transparency = value,
             _ => {}
@@ -394,6 +472,7 @@ impl SettingsDialog {
             )),
             Some(_) => {
                 self.draft.background_image = path.to_owned();
+                self.preview_look();
                 None
             }
             None => Some((format!("画像として読み込めません: {name}"), true)),
@@ -539,7 +618,7 @@ impl SettingsDialog {
         unsafe { SetCapture(self.hwnd) };
         match t {
             T::ColumnWidth => self.drag = Some(Drag { target: t, start_x: x, start_value: self.column_width() }),
-            T::ShadowOpacity | T::Transparency => {
+            T::ShadowOpacity | T::Transparency | T::Blur | T::Tint => {
                 self.drag = Some(Drag { target: t, start_x: x, start_value: 0 });
                 self.set_slider(t, x);
             }
@@ -564,7 +643,7 @@ impl SettingsDialog {
                     let value = if fine { start_value + steps } else { (start_value + steps * 10) / 10 * 10 };
                     self.set_column_width(value);
                 }
-                T::ShadowOpacity | T::Transparency => self.set_slider(t, x),
+                T::ShadowOpacity | T::Transparency | T::Blur | T::Tint => self.set_slider(t, x),
                 T::PickSv | T::PickHue => self.drag_picker(t, x, y),
                 _ => {}
             }
@@ -617,6 +696,11 @@ impl SettingsDialog {
             T::Clear => {
                 self.draft.background_image.clear();
                 self.background_message = None;
+                self.preview_look();
+            }
+            T::BackdropKind(i) => {
+                self.draft.backdrop = [Backdrop::None, Backdrop::Wallpaper, Backdrop::Acrylic][i];
+                self.preview_look();
             }
             T::BgColor => self.open_picker(ColorTarget::Background, anchor.unwrap_or(Rect::new(x, y, 0.0, 0.0))),
             T::TextColor => self.open_picker(ColorTarget::Text, anchor.unwrap_or(Rect::new(x, y, 0.0, 0.0))),
@@ -643,9 +727,14 @@ impl SettingsDialog {
                 let v = self.column_width() + (notches.signum() as i32) * 10;
                 self.set_column_width(v / 10 * 10);
             }
-            Some(t @ (T::ShadowOpacity | T::Transparency)) if self.enabled(t) => {
+            Some(t @ (T::ShadowOpacity | T::Transparency | T::Blur | T::Tint)) if self.enabled(t) => {
                 let step = notches.signum() as i32;
                 match t {
+                    T::Blur | T::Tint => {
+                        let v = if t == T::Blur { &mut self.draft.blur } else { &mut self.draft.tint };
+                        *v = (*v + step).clamp(0, 100);
+                        self.preview_look();
+                    }
                     T::ShadowOpacity => {
                         let o = &mut self.draft.window.shadow_opacity;
                         *o = (*o + step).clamp(0, 100);
@@ -742,6 +831,12 @@ impl SettingsDialog {
             T::Desktop => ui::switch(gfx, r, d.desktop_double_click, st),
             T::ShadowOpacity => ui::slider(gfx, r, d.window.shadow_opacity as f32 / 100.0, st),
             T::Transparency => ui::slider(gfx, r, d.item_button.transparency as f32 / 100.0, st),
+            T::Blur => ui::slider(gfx, r, d.blur as f32 / 100.0, st),
+            T::Tint => ui::slider(gfx, r, d.tint as f32 / 100.0, st),
+            T::BackdropKind(i) => {
+                let on = d.backdrop == [Backdrop::None, Backdrop::Wallpaper, Backdrop::Acrylic][i];
+                ui::toggle(gfx, r, ["なし", "壁紙ぼかし", "アクリル"][i], on, st);
+            }
             T::Browse => ui::button(gfx, r, "参照...", false, st),
             T::Clear => ui::button(gfx, r, "クリア", false, st),
             T::Reset => ui::button(gfx, r, "デフォルトに戻す", false, st),

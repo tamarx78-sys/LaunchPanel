@@ -6,9 +6,13 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod appearance;
+mod backdrop;
 mod color;
 mod config;
 mod dialog;
+mod droptarget;
+mod edit;
 mod items;
 mod layout;
 mod log;
@@ -19,7 +23,7 @@ mod settings;
 mod ui;
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+use windows::Win32::System::Ole::OleInitialize;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::w;
@@ -36,9 +40,9 @@ fn main() {
         return;
     }
 
-    // SAFETY: UI スレッドの COM 初期化 (WIC と Direct2D のため)
+    // SAFETY: UI スレッドの OLE 初期化 (COM の STA に加え、ドラッグ＆ドロップの受け取りに必要)
     unsafe {
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let _ = OleInitialize(None);
     }
 
     // 設定は exe と同じフォルダーに置く (起動方法や作業フォルダーに左右されない)

@@ -58,7 +58,6 @@ const SCROLL_TAU: f32 = 0.06;
 const FALLBACK_ICON_ID: u64 = 0;
 const FOOTER_HINT: &str = "ドラッグ＆ドロップで追加できます";
 
-const BG: Color = Color::rgba(0x22, 0x23, 0x28, 0xFF);
 const PILL: Color = Color::rgba(0x14, 0x15, 0x18, 0xB0);
 const PILL_HOVER: Color = Color::rgba(0x3A, 0x3C, 0x44, 0xE0);
 const OVERLAY_TEXT: Color = Color::rgba(0xE8, 0xE8, 0xEC, 0xFF);
@@ -122,8 +121,9 @@ pub struct App {
     icons: IconLoader,
     fallback: Option<Pixels>,
     fallback_bitmap: Option<(u64, ID2D1Bitmap)>,
-    background: Option<(u64, ID2D1Bitmap)>,
-    background_tried: u64,
+    backdrop: crate::appearance::BackdropView,
+    /// 設定画面で試し表示中の背景 (無ければ保存済みの設定)
+    preview_look: Option<crate::appearance::Look>,
 
     width: f32,
     height: f32,
@@ -171,8 +171,8 @@ impl App {
             icons,
             fallback: None,
             fallback_bitmap: None,
-            background: None,
-            background_tried: 0,
+            backdrop: Default::default(),
+            preview_look: None,
             width: 0.0,
             height: 0.0,
             slots: Vec::new(),
@@ -239,6 +239,7 @@ impl App {
         }
         self.place_initially();
         self.apply_shadow();
+        self.apply_look();
 
         let h = &self.settings.hotkey;
         let modifiers = (h.ctrl as u32 * 2) | (h.alt as u32) | (h.shift as u32 * 4) | (h.win as u32 * 8);
@@ -625,7 +626,7 @@ impl App {
         // SAFETY: メニューは関数内で生成・破棄する
         let cmd = unsafe {
             let Ok(menu) = CreatePopupMenu() else { return };
-            let _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 1, w!("編集 (次の段階で実装)"));
+            let _ = AppendMenuW(menu, MF_STRING, 1, w!("編集..."));
             let _ = AppendMenuW(menu, MF_STRING, 2, w!("削除"));
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
             let _ = AppendMenuW(menu, MF_STRING | if index == 0 { MF_GRAYED } else { MF_ENABLED }, 3, w!("上へ移動"));
@@ -638,6 +639,7 @@ impl App {
             cmd.0
         };
         match cmd {
+            1 => self.open_edit(id),
             2 => self.delete_item(id),
             3 | 4 => {
                 if items::move_by(&mut self.entries, index, if cmd == 3 { -1 } else { 1 }) {
@@ -797,6 +799,34 @@ impl App {
         self.save();
     }
 
+    // ───────────── 編集ダイアログ ─────────────
+
+    fn open_edit(&mut self, id: u64) {
+        let Some(e) = self.entry(id) else { return };
+        if crate::edit::open(self.hwnd, id, &e.item) {
+            // 編集中は本体を自動非表示にしない
+            self.modal += 1;
+        }
+    }
+
+    fn on_edit_closed(&mut self, ok: bool) {
+        self.modal = self.modal.saturating_sub(1);
+        let Some(r) = crate::edit::take_result().filter(|_| ok) else { return };
+        let Some(e) = self.entries.iter_mut().find(|e| e.id == r.id) else { return };
+        let path_changed = e.item.path != r.path;
+        e.item.name = r.name;
+        e.item.path = r.path;
+        if path_changed {
+            // パスが変わったらアイコンを取り直す
+            e.icon = None;
+            e.icon_failed = false;
+            e.bitmap = None;
+            self.icons.request(e.id, &e.item.path);
+        }
+        self.save();
+        self.invalidate();
+    }
+
     // ───────────── 設定画面 ─────────────
 
     /// 設定画面を開く。既に開いていれば何もしない。
@@ -816,8 +846,12 @@ impl App {
         self.modal = self.modal.saturating_sub(1);
         match crate::settings::take_result().filter(|_| ok) {
             Some(new) => self.apply_settings(new),
-            // キャンセル: 試し表示した影を保存済みの値へ戻す
-            None => self.apply_shadow(),
+            // キャンセル: 試し表示した影と背景を保存済みの値へ戻す
+            None => {
+                self.preview_look = None;
+                self.apply_look();
+                self.apply_shadow();
+            }
         }
     }
 
@@ -849,8 +883,8 @@ impl App {
                 );
             }
         }
-        // 背景画像は次の描画で読み直す
-        self.background_tried = 0;
+        self.preview_look = None;
+        self.apply_look();
         self.apply_shadow();
         if old.desktop_double_click != self.settings.desktop_double_click {
             if self.settings.desktop_double_click {
@@ -939,12 +973,11 @@ impl App {
         let animating = self.step_animation();
         self.refresh_bitmaps();
 
-        let gfx = &self.gfx;
-        gfx.begin(BG);
+        let look = self.look();
         let full = Rect::new(0.0, 0.0, self.width, self.height);
-        if let Some((_, bg)) = &self.background {
-            gfx.bitmap_cover(bg, full);
-        }
+        self.gfx.begin(self.backdrop.clear_color());
+        self.backdrop.draw(&self.gfx, self.hwnd, &look, full);
+        let gfx = &self.gfx;
 
         // 上部: サイズと列数、設定、ピン留め
         let status = layout::status_text(self.width as f64, self.height as f64, self.column_count());
@@ -1030,19 +1063,18 @@ impl App {
         if self.fallback_bitmap.as_ref().is_none_or(|(g, _)| *g != generation) {
             self.fallback_bitmap = self.fallback.as_ref().and_then(|p| self.gfx.create_bitmap(p)).map(|b| (generation, b));
         }
-        if self.background_tried != generation {
-            self.background_tried = generation;
-            let path = self.settings.background_image.trim();
-            self.background = if path.is_empty() {
-                None
-            } else {
-                let loaded = self.gfx.load_image(path);
-                if loaded.is_none() {
-                    crate::log::write(&format!("背景画像を読み込めません: {path}"));
-                }
-                loaded.map(|b| (generation, b))
-            };
-        }
+    }
+
+    /// 現在の背景の描き方 (設定画面の試し表示中は編集中の値)。
+    fn look(&self) -> crate::appearance::Look {
+        self.preview_look.clone().unwrap_or_else(|| crate::appearance::Look::of(&self.settings))
+    }
+
+    /// アクリルの有無を背景の設定に合わせ、描き直す。
+    fn apply_look(&mut self) {
+        let look = self.look();
+        self.backdrop.update_mode(self.hwnd, &look);
+        self.invalidate();
     }
 
     // ───────────── メッセージ ─────────────
@@ -1170,6 +1202,25 @@ impl App {
             WM_APP_ICON => self.on_icons(),
             WM_APP_DESKTOP => self.show_at(wparam.0 as i32, lparam.0 as i32),
             crate::settings::WM_APP_SETTINGS => self.on_settings_closed(wparam.0 == 1),
+            crate::settings::WM_APP_PREVIEW => {
+                self.preview_look = crate::settings::preview_look();
+                self.apply_look();
+            }
+            WM_MOVE => {
+                // 壁紙ぼかしはウィンドウの裏にあたる部分を描くので、動いたら描き直す
+                if self.backdrop.follows_position(&self.look()) {
+                    self.invalidate();
+                }
+            }
+            WM_SETTINGCHANGE | WM_DISPLAYCHANGE => {
+                // 壁紙やディスプレイ構成の変更 (SPI_SETDESKWALLPAPER = 0x14)
+                if msg == WM_DISPLAYCHANGE || wparam.0 == 0x14 {
+                    self.backdrop.invalidate_wallpaper();
+                    self.invalidate();
+                }
+                return None;
+            }
+            crate::edit::WM_APP_EDIT => self.on_edit_closed(wparam.0 == 1),
             WM_APP_SHELL => match wparam.0 as u32 {
                 1 | 4 => self.show(),
                 2 => {
