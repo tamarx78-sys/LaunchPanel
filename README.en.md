@@ -36,7 +36,22 @@ The screenshots show the Japanese UI.
 - Added an item edit window (rename items, and change the path by dropping a file, folder, or browser link).
 - Added blurred wallpaper and acrylic backgrounds, the window shadow, and drag-and-drop reordering.
 
-A v1 `LaunchPanel.json` can be read as is. Replace the v1 executable in the same folder to keep your items and settings. v1 ignores the settings added in v2, so you can also switch back.
+## Upgrading from v1
+
+v2 reads a v1 `LaunchPanel.json` as is, so in most cases you only need to replace the executable.
+
+1. Quit v1 completely with Exit in the tray menu (v1 and v2 share the single-instance check, so v2 does not start while v1 is running).
+2. To be safe, copy the v1 `LaunchPanel.exe` and `LaunchPanel.json` somewhere else.
+3. Overwrite the v1 `LaunchPanel.exe` with the v2 `LaunchPanel.exe` and start it.
+
+Items, column width, hotkey, button color, transparency, bold text, and the desktop double-click setting carry over.
+
+Things to check:
+
+- **Settings file location**: v1 saves `LaunchPanel.json` in the current folder at startup, v2 saves it next to the executable. They are the same if you started v1 by double-clicking the executable. If you used a shortcut with a different working folder or started v1 automatically at sign-in, `LaunchPanel.json` may be elsewhere; move it next to the executable.
+- **Window size**: v1 settings do not record the window size, so the window opens at the default size the first time. Once you resize it, the size is remembered.
+- **Background**: If you used a background image, it is loaded without blur or darkness, so it looks the same. If you used no background image, v2's default (blurred wallpaper) is used. For a plain background, choose None under the background setting for when no image is set.
+- **Switching back to v1**: Just restore the v1 executable. v1 ignores the settings added in v2.
 
 ## Requirements
 
