@@ -240,15 +240,20 @@ unsafe fn extract_pixels(bitmap: HBITMAP) -> Option<Pixels> {
 /// サムネイル (JPEG など) はアルファが全て 0 で返ることがあるので不透明にする。
 /// 乗算済みでない (色 > アルファの画素がある) 場合は乗算する。
 fn normalize_alpha(data: &mut [u8]) {
-    if data.chunks_exact(4).all(|p| p[3] == 0) {
-        data.chunks_exact_mut(4).for_each(|p| p[3] = 255);
+    if data.as_chunks::<4>().0.iter().all(|p| p[3] == 0) {
+        data.as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .for_each(|p| p[3] = 255);
         return;
     }
     let premultiplied = data
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]);
     if !premultiplied {
-        for p in data.chunks_exact_mut(4) {
+        for p in data.as_chunks_mut::<4>().0.iter_mut() {
             let a = p[3] as u32;
             for c in &mut p[..3] {
                 *c = ((*c as u32 * a + 127) / 255) as u8;

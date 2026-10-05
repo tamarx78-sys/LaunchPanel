@@ -335,7 +335,9 @@ mod tests {
         );
         assert_eq!(alpha(0, 0), 0);
         assert!(
-            px.chunks_exact(4)
+            px.as_chunks::<4>()
+                .0
+                .iter()
                 .all(|p| p[0] == 0 && p[1] == 0 && p[2] == 0),
             "黒の乗算済み"
         );
@@ -365,7 +367,9 @@ mod opacity_tests {
         let (w, h, r) = (100, 80, 16);
         let peak = |a: f64| {
             shadow_pixels(w, h, r, 0, a)
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|p| p[3])
                 .max()
                 .unwrap()
