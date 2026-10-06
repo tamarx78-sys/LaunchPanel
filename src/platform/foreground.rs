@@ -21,6 +21,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 /// `hwnd` は呼び出しスレッドが所有する有効なウィンドウであること。
 pub unsafe extern "system" fn lp_force_foreground(hwnd: isize) -> i32 {
     let hwnd = HWND(hwnd as *mut _);
+    if simulate_failure() {
+        return 0;
+    }
     // SAFETY: 呼び出し側の保証どおり
     unsafe {
         if try_set(hwnd) {
@@ -45,6 +48,18 @@ pub unsafe extern "system" fn lp_force_foreground(hwnd: isize) -> i32 {
         });
         ok as i32
     }
+}
+
+/// デバッグ版のテスト用 (LAUNCHPANEL_TEST_FG_FAIL=1): 前面化できない状況 (管理者権限のアプリが
+/// 前面の時など) を再現し、最前面表示・やり直し・見張りの補いを確かめる。
+pub fn simulate_failure() -> bool {
+    #[cfg(debug_assertions)]
+    {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("LAUNCHPANEL_TEST_FG_FAIL").is_ok_and(|v| v == "1"))
+    }
+    #[cfg(not(debug_assertions))]
+    false
 }
 
 unsafe fn try_set(hwnd: HWND) -> bool {

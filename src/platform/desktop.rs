@@ -12,12 +12,17 @@
 //! 前面に戻り、ランチャーがすぐ自動非表示になってしまうため。
 //!
 //! 空白判定はクリックのたびにウィンドウを探し直すので、Explorer 再起動後も再設定は要らない。
+//!
+//! 低レベルフックは、応答の遅れが続くと (スリープ復帰直後など PC が重い時) Windows に
+//! 通知なしで外されることがある。外れたことは検出できないので、定期的とスリープ復帰時に
+//! 付け直す (新しいフックを付けてから古いフックを外すので、途切れない)。
 
 use std::cell::RefCell;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::System::Com::{
@@ -34,6 +39,13 @@ use windows::core::{PCWSTR, w};
 
 type ClickCallback = extern "system" fn(x: i32, y: i32);
 
+/// フックを付け直す間隔
+const REHOOK_INTERVAL_MS: u32 = 2 * 60 * 1000;
+/// フックスレッドへの付け直し要求
+const WM_REHOOK: u32 = WM_APP + 1;
+/// 判定が遅れてこれより古くなったダブルクリックは捨てる (時間が経ってから突然出ないように)
+const MAX_CANDIDATE_AGE: Duration = Duration::from_millis(1000);
+
 static CALLBACK: AtomicUsize = AtomicUsize::new(0);
 static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
 
@@ -48,6 +60,8 @@ struct Running {
 struct Candidate {
     first: POINT,
     second: POINT,
+    /// 2回目の解放を受けた時刻
+    at: Instant,
 }
 
 /// フックスレッドだけが触る状態。
@@ -87,7 +101,15 @@ pub extern "system" fn lp_desktop_start(callback: ClickCallback) -> i32 {
             }
             for c in rx {
                 if is_desktop_blank(c.first) && is_desktop_blank(c.second) {
-                    notify(c.second);
+                    let age = c.at.elapsed();
+                    if age > MAX_CANDIDATE_AGE {
+                        crate::log::write(&format!(
+                            "デスクトップのダブルクリックの判定が遅れたため無視 ({} ms)",
+                            age.as_millis()
+                        ));
+                    } else {
+                        notify(c.second);
+                    }
                 }
             }
         })
@@ -112,6 +134,16 @@ pub extern "system" fn lp_desktop_start(callback: ClickCallback) -> i32 {
             let _ = hook_thread.join();
             let _ = worker.join(); // 送信側はフックスレッドと共に破棄済み
             0
+        }
+    }
+}
+
+/// フックを付け直す (スリープ復帰時など)。監視していなければ何もしない。
+pub extern "system" fn lp_desktop_rehook() {
+    if let Some(running) = RUNNING.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        // SAFETY: 自分で作ったスレッドへの要求
+        unsafe {
+            let _ = PostThreadMessageW(running.hook_thread_id, WM_REHOOK, WPARAM(0), LPARAM(0));
         }
     }
 }
@@ -143,7 +175,8 @@ fn run_hook(sender: mpsc::Sender<Candidate>, ready: mpsc::Sender<Option<u32>>) {
     // SAFETY: フックはこのスレッドのメッセージループで呼ばれ、終了時に必ず解除する
     unsafe {
         let instance = GetModuleHandleW(None).unwrap_or_default();
-        let hook = match SetWindowsHookExW(WH_MOUSE_LL, Some(hook_proc), Some(instance.into()), 0) {
+        let install = || SetWindowsHookExW(WH_MOUSE_LL, Some(hook_proc), Some(instance.into()), 0);
+        let mut hook = match install() {
             Ok(h) => h,
             Err(_) => {
                 let _ = ready.send(None);
@@ -151,11 +184,27 @@ fn run_hook(sender: mpsc::Sender<Candidate>, ready: mpsc::Sender<Option<u32>>) {
             }
         };
         let _ = ready.send(Some(GetCurrentThreadId()));
+        // ウィンドウなしのスレッドタイマー (WM_TIMER がこのスレッドのキューに届く)
+        let timer = SetTimer(None, 0, REHOOK_INTERVAL_MS, None);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            if msg.hwnd.is_invalid() && (msg.message == WM_TIMER || msg.message == WM_REHOOK) {
+                match install() {
+                    Ok(new) => {
+                        // 外されていた場合、古いフックの解除は失敗するが問題ない
+                        let _ = UnhookWindowsHookEx(hook);
+                        hook = new;
+                    }
+                    Err(e) => crate::log::write(&format!(
+                        "マウスフックを付け直せませんでした (今のフックを使い続けます): {e}"
+                    )),
+                }
+                continue;
+            }
             DispatchMessageW(&msg);
         }
+        let _ = KillTimer(None, timer);
         let _ = UnhookWindowsHookEx(hook);
     }
     STATE.with(|s| s.borrow_mut().sender = None);
@@ -187,7 +236,11 @@ fn on_mouse(msg: u32, pt: POINT, time: u32) {
                 });
                 if double {
                     let (first, _) = s.first.take().unwrap_or_default();
-                    s.armed = Some(Candidate { first, second: pt });
+                    s.armed = Some(Candidate {
+                        first,
+                        second: pt,
+                        at: Instant::now(),
+                    });
                 } else {
                     s.first = Some((pt, time));
                     s.armed = None;
@@ -205,7 +258,10 @@ fn on_mouse(msg: u32, pt: POINT, time: u32) {
                 if let Some(candidate) = s.armed.take()
                     && let Some(sender) = &s.sender
                 {
-                    let _ = sender.send(candidate);
+                    let _ = sender.send(Candidate {
+                        at: Instant::now(),
+                        ..candidate
+                    });
                 }
             }
             WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN => {
@@ -306,7 +362,17 @@ unsafe extern "system" fn find_defview(hwnd: HWND, lparam: LPARAM) -> windows::c
 /// 誤判定されやすいので使わない。オーバーレイの UIA 要素に惑わされないよう、点からの要素検索
 /// (ElementFromPoint) ではなく、WindowFromPoint で確かめた一覧そのものから子要素をたどる。
 fn hit_item(listview: HWND, pt: POINT) -> Option<bool> {
-    let rects = item_rects(listview)?;
+    // Explorer が忙しいと取得に失敗することがあるので、1 回だけやり直す
+    let rects = item_rects(listview).or_else(|| {
+        std::thread::sleep(Duration::from_millis(60));
+        let r = item_rects(listview);
+        if r.is_none() {
+            crate::log::write(
+                "デスクトップのアイコン位置を取得できませんでした (ダブルクリックを無視)",
+            );
+        }
+        r
+    })?;
     Some(
         rects
             .iter()

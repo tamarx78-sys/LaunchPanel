@@ -59,7 +59,7 @@ v1の `LaunchPanel.json` はそのまま読み込めるので、基本的には�
 
 ## ダウンロード
 
-[Releases](https://github.com/tamarx78-sys/LaunchPanel/releases) から `LaunchPanel-v2.1.0.zip` を取得し、`LaunchPanel.exe` を書き込み可能なフォルダーに置いて起動してください。
+[Releases](https://github.com/tamarx78-sys/LaunchPanel/releases) から `LaunchPanel-v2.1.1.zip` を取得し、`LaunchPanel.exe` を書き込み可能なフォルダーに置いて起動してください。
 
 ## ビルド
 
@@ -89,6 +89,7 @@ cargo build --release
 - 実行ファイルは書き込みできるフォルダーに置いてください (`C:\Program Files` などでは設定を保存できません)。
 - デスクトップのダブルクリック検出は、有効にした場合だけ低レベルのマウスフックを使います (入力は横取りせず、そのまま次へ渡します)。デスクトップのアイコン位置はUI Automationで調べます。
 - 署名していない新しい実行ファイルのため、一部のウイルス対策ソフトが機械学習による判定で誤検知することがあります。
+- 表示・非表示の動作 (理由や前面化の成否) を、実行ファイルと同じフォルダーの `LaunchPanel.log` に記録します。表示されない・隠れないなどの不具合が起きた時の調査に使います。
 - 現在はWindows専用です。
 
 ## 開発

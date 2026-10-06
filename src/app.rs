@@ -13,9 +13,10 @@ use windows::Win32::Graphics::Dwm::{
 };
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateDIBSection, DIB_RGB_COLORS, DeleteObject,
-    GetMonitorInfoW, HBITMAP, HGDIOBJ, InvalidateRect, MONITOR_DEFAULTTONEAREST,
-    MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint, ValidateRect,
+    GetMonitorInfoW, HBITMAP, HGDIOBJ, HMONITOR, InvalidateRect, MONITOR_DEFAULTTONEAREST,
+    MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint, MonitorFromRect, ValidateRect,
 };
+use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -42,6 +43,13 @@ pub const WM_APP_DESKTOP: u32 = WM_APP + 13;
 
 const TIMER_GRACE: usize = 1;
 const TIMER_FOOTER: usize = 2;
+/// 表示中だけ動かす見張り (フォーカス喪失の通知を取りこぼしても隠せるように)
+const TIMER_WATCH: usize = 3;
+/// 前面化に失敗した時のやり直し
+const TIMER_RETRY: usize = 4;
+const WATCH_INTERVAL_MS: u32 = 500;
+const RETRY_INTERVAL_MS: u32 = 120;
+const MAX_RETRIES: u32 = 3;
 
 const TOP_BAR: f32 = 40.0;
 const FOOTER: f32 = 40.0;
@@ -149,6 +157,14 @@ pub struct App {
     shown_at: Instant,
     /// 復帰直後の猶予中に前面を奪われた。猶予の終わりに取り戻す
     reclaim_focus: bool,
+    /// 表示してから一度でもアクティブになったか
+    activated: bool,
+    /// 前面化に失敗した時の前面ウィンドウ。アクティブになるまでは、前面がこれのままなら隠さない
+    /// (管理者権限のアプリが前面の時など。出た瞬間に消えないように)
+    fg_baseline: isize,
+    retries: u32,
+    /// 前面化に失敗したので最前面に置いている
+    topmost: bool,
     exiting: bool,
     footer: Option<String>,
 }
@@ -194,6 +210,10 @@ impl App {
             settings_open: false,
             shown_at: Instant::now(),
             reclaim_focus: false,
+            activated: false,
+            fg_baseline: 0,
+            retries: 0,
+            topmost: false,
             exiting: false,
             footer: None,
         });
@@ -278,7 +298,7 @@ impl App {
         {
             crate::log::write("デスクトップのダブルクリック監視を開始できませんでした。");
         }
-        self.show();
+        self.show("起動");
     }
 
     /// 保存済みの内側サイズで、プライマリモニターの作業領域中央に置く。
@@ -301,21 +321,165 @@ impl App {
         };
     }
 
-    /// 従来の位置で復帰し、前面化して入力フォーカスを得る。
-    pub fn show(&mut self) {
+    /// 従来の位置で復帰し、前面化して入力フォーカスを得る。`reason` は診断ログ用の呼び出し元。
+    pub fn show(&mut self, reason: &str) {
+        self.ensure_on_screen();
         self.shown_at = Instant::now();
         self.reclaim_focus = false;
-        // SAFETY: 自分のウィンドウの表示
-        unsafe {
-            let _ = ShowWindow(self.hwnd, SW_SHOW);
-            let ok = foreground::lp_force_foreground(self.hwnd.0 as isize) != 0;
-            crate::log::debug(&format!(
-                "表示: 前面化{} (前面={})",
-                if ok { "成功" } else { "失敗" },
-                window_label(GetForegroundWindow())
+        self.activated = false;
+        // SAFETY: 前面ウィンドウの参照と自分のウィンドウの表示
+        let (before, ok) = unsafe {
+            let before = GetForegroundWindow();
+            let cmd = if foreground::simulate_failure() {
+                SW_SHOWNOACTIVATE
+            } else {
+                SW_SHOW
+            };
+            let _ = ShowWindow(self.hwnd, cmd);
+            let ok = foreground::lp_force_foreground(self.hwnd.0 as isize) != 0
+                || GetForegroundWindow() == self.hwnd;
+            (before, ok)
+        };
+        crate::log::write(&format!(
+            "表示 ({reason}): 前面化{} (直前の前面={})",
+            if ok { "成功" } else { "失敗" },
+            window_label(before)
+        ));
+        if ok {
+            self.set_topmost(false);
+        } else {
+            self.foreground_failed(before);
+        }
+        // SAFETY: タイマー設定
+        unsafe { SetTimer(Some(self.hwnd), TIMER_WATCH, WATCH_INTERVAL_MS, None) };
+        self.invalidate();
+    }
+
+    /// 前面化できなかった。最前面に置いて見えるようにし、何回かやり直す。
+    /// `baseline` が前面のままの間は見張りでも隠さない (クリックすれば普通に使える)。
+    fn foreground_failed(&mut self, baseline: HWND) {
+        self.activated = false;
+        self.fg_baseline = baseline.0 as isize;
+        self.retries = 0;
+        self.set_topmost(true);
+        // SAFETY: タイマー設定
+        unsafe { SetTimer(Some(self.hwnd), TIMER_RETRY, RETRY_INTERVAL_MS, None) };
+    }
+
+    fn retry_foreground(&mut self) {
+        // SAFETY: ウィンドウ状態の参照
+        if self.activated || !unsafe { IsWindowVisible(self.hwnd) }.as_bool() {
+            return;
+        }
+        self.retries += 1;
+        // SAFETY: 自分のウィンドウの前面化と前面ウィンドウの参照
+        if unsafe {
+            foreground::lp_force_foreground(self.hwnd.0 as isize) != 0
+                || GetForegroundWindow() == self.hwnd
+        } {
+            crate::log::write(&format!("前面化をやり直して成功 ({} 回目)", self.retries));
+            self.set_topmost(false);
+        } else if self.retries < MAX_RETRIES {
+            // SAFETY: タイマー設定
+            unsafe { SetTimer(Some(self.hwnd), TIMER_RETRY, RETRY_INTERVAL_MS, None) };
+        } else {
+            crate::log::write(&format!(
+                "前面化できないため、最前面に表示してクリックを待つ (前面={})",
+                // SAFETY: 前面ウィンドウの参照
+                window_label(unsafe { GetForegroundWindow() })
             ));
         }
-        self.invalidate();
+    }
+
+    /// 前面化に失敗した間だけ最前面に置く (自分のウィンドウの Z 順は前面化の制限を受けない)。
+    fn set_topmost(&mut self, on: bool) {
+        if self.topmost == on {
+            return;
+        }
+        self.topmost = on;
+        // SAFETY: 自分のウィンドウの Z 順の変更
+        unsafe {
+            let _ = SetWindowPos(
+                self.hwnd,
+                Some(if on { HWND_TOPMOST } else { HWND_NOTOPMOST }),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
+
+    /// ウィンドウがどのモニターの作業領域にもほとんど入っていなければ (モニターを外した、
+    /// 画面構成が変わった等)、最も近いモニターの作業領域へ収める。
+    fn ensure_on_screen(&mut self) {
+        let mut rc = RECT::default();
+        // SAFETY: 自分のウィンドウの矩形取得とモニター情報の取得
+        let area = unsafe {
+            if GetWindowRect(self.hwnd, &mut rc).is_err() {
+                return;
+            }
+            monitor_work_area(MonitorFromRect(&rc, MONITOR_DEFAULTTONEAREST))
+        };
+        let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
+        let visible_w = rc.right.min(area.right) - rc.left.max(area.left);
+        let visible_h = rc.bottom.min(area.bottom) - rc.top.max(area.top);
+        if visible_w >= w.min(120) && visible_h >= h.min(60) {
+            return;
+        }
+        let x = rc.left.min(area.right - w).max(area.left);
+        let y = rc.top.min(area.bottom - h).max(area.top);
+        crate::log::write(&format!(
+            "画面外にあったため移動: ({}, {}) → ({x}, {y})",
+            rc.left, rc.top
+        ));
+        // SAFETY: 自分のウィンドウの移動
+        unsafe {
+            let _ = SetWindowPos(
+                self.hwnd,
+                None,
+                x,
+                y,
+                0,
+                0,
+                SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
+
+    /// 表示中の見張り。前面が他のアプリになっていれば隠す。
+    /// フォーカス喪失の通知 (WM_ACTIVATE) を、メニューやダイアログの表示中・リサイズ中・
+    /// 前面化の失敗などで取りこぼしても、ここで回収する。
+    fn watch(&mut self) {
+        // SAFETY: ウィンドウ状態の参照
+        if self.exiting || !unsafe { IsWindowVisible(self.hwnd) }.as_bool() {
+            // SAFETY: 自分のタイマーの停止
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_WATCH);
+            }
+            return;
+        }
+        if self.pinned
+            || self.modal > 0
+            || self.resize.is_some()
+            || self.press.is_some()
+            || self.drag.is_some()
+            || self.reclaim_focus
+            || self.shown_at.elapsed() < RESTORE_GRACE * 2
+        {
+            return;
+        }
+        // SAFETY: 前面ウィンドウの参照
+        let fg = unsafe { GetForegroundWindow() };
+        // 切り替えの途中 (前面なし) と、自分のプロセスの窓 (ダイアログ・メニュー) は除く
+        if fg.is_invalid() || is_own_window(fg) {
+            return;
+        }
+        if !self.activated && fg.0 as isize == self.fg_baseline {
+            return;
+        }
+        self.hide(&format!("見張り: 前面が他のアプリ ({})", window_label(fg)));
     }
 
     /// デスクトップのダブルクリック位置 (物理座標) へ左上を合わせて復帰する。
@@ -340,17 +504,16 @@ impl App {
                 SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE,
             );
         }
-        self.show();
+        self.show("デスクトップのダブルクリック");
     }
 
-    fn hide(&self) {
-        // SAFETY: 前面ウィンドウの参照
-        crate::log::debug(&format!(
-            "非表示 (前面={})",
-            window_label(unsafe { GetForegroundWindow() })
-        ));
-        // SAFETY: 自分のウィンドウの非表示
+    fn hide(&mut self, reason: &str) {
+        crate::log::write(&format!("非表示 ({reason})"));
+        self.set_topmost(false);
+        // SAFETY: 自分のタイマーの停止とウィンドウの非表示
         unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_WATCH);
+            let _ = KillTimer(Some(self.hwnd), TIMER_RETRY);
             let _ = ShowWindow(self.hwnd, SW_HIDE);
         }
     }
@@ -385,21 +548,27 @@ impl App {
         if std::mem::take(&mut self.reclaim_focus) {
             // SAFETY: 前面ウィンドウの参照と前面化
             unsafe {
-                if GetForegroundWindow() != self.hwnd {
+                let fg = GetForegroundWindow();
+                if fg != self.hwnd {
                     let ok = foreground::lp_force_foreground(self.hwnd.0 as isize) != 0;
-                    crate::log::debug(&format!(
-                        "猶予終了: 前面を取り戻す ({})",
-                        if ok { "成功" } else { "失敗" }
+                    crate::log::write(&format!(
+                        "復帰直後に前面を奪われたので取り戻す: {} (前面={})",
+                        if ok { "成功" } else { "失敗" },
+                        window_label(fg)
                     ));
+                    if !ok {
+                        self.foreground_failed(fg);
+                    }
                 }
             }
             return;
         }
         // SAFETY: 前面ウィンドウの参照
-        if unsafe { GetForegroundWindow() } == self.hwnd {
+        let fg = unsafe { GetForegroundWindow() };
+        if fg == self.hwnd {
             return;
         }
-        self.hide();
+        self.hide(&format!("フォーカス喪失 (前面={})", window_label(fg)));
     }
 
     fn exit(&mut self) {
@@ -1414,15 +1583,20 @@ impl App {
                 ));
                 if (wparam.0 & 0xFFFF) as u32 == WA_INACTIVE {
                     self.auto_hide();
+                } else {
+                    self.activated = true;
+                    self.set_topmost(false);
                 }
             }
+            WM_TIMER if wparam.0 == TIMER_WATCH => self.watch(),
             WM_TIMER => {
-                // SAFETY: 自分のタイマーの停止
+                // SAFETY: 自分のタイマーの停止 (見張り以外は 1 回限り)
                 unsafe {
                     let _ = KillTimer(Some(self.hwnd), wparam.0);
                 }
                 match wparam.0 {
                     TIMER_GRACE => self.auto_hide(),
+                    TIMER_RETRY => self.retry_foreground(),
                     TIMER_FOOTER => {
                         self.footer = None;
                         self.invalidate();
@@ -1434,7 +1608,7 @@ impl App {
                 if !self.exiting {
                     // 閉じる操作は終了ではなく非表示。ピン留めも解除する
                     self.pinned = false;
-                    self.hide();
+                    self.hide("閉じる操作");
                     return Some(LRESULT(0));
                 }
             }
@@ -1442,7 +1616,16 @@ impl App {
                 // SAFETY: メッセージループの終了
                 unsafe { PostQuitMessage(0) };
             }
-            WM_APP_SHOW => self.show(),
+            WM_APP_SHOW => self.show("二重起動"),
+            WM_POWERBROADCAST => {
+                // スリープからの復帰直後はマウスフックが外されやすいので付け直す
+                // (PBT_APMRESUMESUSPEND = 7, PBT_APMRESUMEAUTOMATIC = 0x12)
+                if matches!(wparam.0, 7 | 0x12) {
+                    crate::log::write("スリープから復帰");
+                    desktop::lp_desktop_rehook();
+                }
+                return None;
+            }
             WM_APP_ICON => self.on_icons(),
             WM_APP_DESKTOP => self.show_at(wparam.0 as i32, lparam.0 as i32),
             crate::settings::WM_APP_SETTINGS => self.on_settings_closed(wparam.0 == 1),
@@ -1466,10 +1649,11 @@ impl App {
             }
             crate::edit::WM_APP_EDIT => self.on_edit_closed(wparam.0 == 1),
             WM_APP_SHELL => match wparam.0 as u32 {
-                1 | 4 => self.show(),
+                1 => self.show("トレイ"),
+                4 => self.show("ホットキー"),
                 2 => {
                     // 設定画面は本体に所有させるので、非表示なら先に復帰する
-                    self.show();
+                    self.show("トレイの設定");
                     self.open_settings();
                 }
                 3 => self.exit(),
@@ -1481,7 +1665,6 @@ impl App {
     }
 }
 
-/// 診断ログ用のウィンドウ表記 (クラス名)。
 /// 右クリックメニューの「ボタンの色」の最初のコマンド ID (色番号を足す)。
 const COLOR_COMMAND: u32 = 100;
 
@@ -1537,6 +1720,17 @@ fn menu_swatch(c: Rgb, size: i32) -> Option<HBITMAP> {
     }
 }
 
+/// 自分のプロセスのウィンドウか (ダイアログ・メニュー・トレイのメニューなど)。
+fn is_own_window(hwnd: HWND) -> bool {
+    let mut pid = 0;
+    // SAFETY: ウィンドウの所有プロセスの参照のみ
+    unsafe {
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        pid == GetCurrentProcessId()
+    }
+}
+
+/// 診断ログ用のウィンドウ表記 (クラス名)。
 fn window_label(hwnd: HWND) -> String {
     if hwnd.is_invalid() {
         return "なし".into();
@@ -1549,13 +1743,17 @@ fn window_label(hwnd: HWND) -> String {
 
 /// モニターの作業領域 (物理座標)。
 fn work_area(pt: POINT, flags: windows::Win32::Graphics::Gdi::MONITOR_FROM_FLAGS) -> RECT {
+    // SAFETY: モニターの検索のみ
+    monitor_work_area(unsafe { MonitorFromPoint(pt, flags) })
+}
+
+fn monitor_work_area(monitor: HMONITOR) -> RECT {
     let mut info = MONITORINFO {
         cbSize: size_of::<MONITORINFO>() as u32,
         ..Default::default()
     };
     // SAFETY: モニター情報の取得
     unsafe {
-        let monitor = MonitorFromPoint(pt, flags);
         let _ = GetMonitorInfoW(monitor, &mut info);
     }
     info.rcWork

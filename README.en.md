@@ -61,7 +61,7 @@ Things to check:
 
 ## Download
 
-Get `LaunchPanel-v2.1.0.zip` from [Releases](https://github.com/tamarx78-sys/LaunchPanel/releases), put `LaunchPanel.exe` in a writable folder, and run it.
+Get `LaunchPanel-v2.1.1.zip` from [Releases](https://github.com/tamarx78-sys/LaunchPanel/releases), put `LaunchPanel.exe` in a writable folder, and run it.
 
 ## Build
 
@@ -91,6 +91,7 @@ Settings are saved as `LaunchPanel.json` in the same folder as the executable. A
 - Put the executable in a writable folder (settings cannot be saved in folders such as `C:\Program Files`).
 - Desktop double-click detection uses a low-level mouse hook only while the feature is enabled (input is always passed on, never consumed). Desktop icon positions are read with UI Automation.
 - Because the executable is new and unsigned, some antivirus products may report a false positive based on machine-learning detection.
+- LaunchPanel records when and why the window is shown or hidden (and whether it could come to the front) in `LaunchPanel.log` next to the executable, to help track down cases where it fails to appear or hide.
 - LaunchPanel currently supports Windows only.
 
 ## Development
