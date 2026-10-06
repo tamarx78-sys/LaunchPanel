@@ -58,7 +58,7 @@ v1の `LaunchPanel.json` はそのまま読み込めるので、基本的には�
 
 ## ダウンロード
 
-[Releases](https://github.com/tamarx78-sys/LaunchPanel/releases) から `LaunchPanel-v2.0.0.zip` を取得し、`LaunchPanel.exe` を書き込み可能なフォルダーに置いて起動してください。
+[Releases](https://github.com/tamarx78-sys/LaunchPanel/releases) から `LaunchPanel-v2.0.1.zip` を取得し、`LaunchPanel.exe` を書き込み可能なフォルダーに置いて起動してください。
 
 ## ビルド
 

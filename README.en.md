@@ -60,7 +60,7 @@ Things to check:
 
 ## Download
 
-Get `LaunchPanel-v2.0.0.zip` from [Releases](https://github.com/tamarx78-sys/LaunchPanel/releases), put `LaunchPanel.exe` in a writable folder, and run it.
+Get `LaunchPanel-v2.0.1.zip` from [Releases](https://github.com/tamarx78-sys/LaunchPanel/releases), put `LaunchPanel.exe` in a writable folder, and run it.
 
 ## Build
 
