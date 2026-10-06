@@ -47,6 +47,7 @@ pub fn add_paths(items: &mut Vec<Item>, paths: impl IntoIterator<Item = String>)
         items.push(Item {
             name: default_name(path),
             path: path.to_owned(),
+            color: 0,
         });
         added += 1;
     }
@@ -101,6 +102,7 @@ mod tests {
         let mut items = vec![Item {
             name: "a".into(),
             path: r"C:\A.txt".into(),
+            color: 0,
         }];
         let added = add_paths(
             &mut items,
@@ -117,6 +119,7 @@ mod tests {
             .map(|c| Item {
                 name: c.into(),
                 path: c.into(),
+                color: 0,
             })
             .collect();
         assert!(!move_by(&mut items, 0, -1));

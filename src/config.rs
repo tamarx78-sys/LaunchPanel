@@ -14,6 +14,16 @@ pub const MAX_COLUMN_WIDTH: f64 = 600.0;
 pub const DEFAULT_HEIGHT: f64 = 600.0;
 pub const MIN_INNER_SIZE: f64 = 200.0;
 pub const DEFAULT_SHADOW_OPACITY: i32 = 40;
+/// ボタンの色の数 (標準 + グループの色)。アイテムの `color` は 0 (標準) ～ この値 - 1
+pub const BUTTON_COLORS: usize = 6;
+/// グループの色 (色 1～5) の既定値。既定の文字色 (明るい灰色) が読める中間の明るさの青・緑・赤・紫・黄土
+pub const DEFAULT_GROUP_COLORS: [Rgb; BUTTON_COLORS - 1] = [
+    Rgb(52, 92, 150),
+    Rgb(44, 118, 78),
+    Rgb(150, 60, 60),
+    Rgb(108, 74, 150),
+    Rgb(146, 108, 40),
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
@@ -82,6 +92,8 @@ pub struct ItemButtonSettings {
     pub transparency: i32,
     pub text_color: Rgb,
     pub bold_text: bool,
+    /// グループ分け用の色 1～5 (標準は `background_color`)
+    pub group_colors: [Rgb; BUTTON_COLORS - 1],
 }
 
 impl Default for ItemButtonSettings {
@@ -91,6 +103,7 @@ impl Default for ItemButtonSettings {
             transparency: 0,
             text_color: Rgb(180, 180, 180),
             bold_text: false,
+            group_colors: DEFAULT_GROUP_COLORS,
         }
     }
 }
@@ -99,6 +112,21 @@ impl ItemButtonSettings {
     /// 透過率を 0.0～1.0 の不透明度へ変換する。
     pub fn background_alpha(&self) -> f32 {
         (100 - self.transparency) as f32 / 100.0
+    }
+
+    /// ボタンの色番号 (0 = 標準、1～5 = グループの色) の背景色。範囲外は標準。
+    pub fn color(&self, index: usize) -> Rgb {
+        match index {
+            1..BUTTON_COLORS => self.group_colors[index - 1],
+            _ => self.background_color,
+        }
+    }
+
+    pub fn set_color(&mut self, index: usize, c: Rgb) {
+        match index {
+            1..BUTTON_COLORS => self.group_colors[index - 1] = c,
+            _ => self.background_color = c,
+        }
     }
 }
 
@@ -170,6 +198,8 @@ impl Default for Settings {
 pub struct Item {
     pub name: String,
     pub path: String,
+    /// ボタンの色番号 (0 = 標準、1～5 = グループの色)
+    pub color: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -243,6 +273,11 @@ fn read_settings(node: &Map<String, Value>, s: &mut Settings) {
         }
         d.text_color = rgb(b.get("text_color")).unwrap_or(d.text_color);
         d.bold_text = boolean(b.get("bold_text")).unwrap_or(false);
+        if let Some(Value::Array(colors)) = b.get("group_colors") {
+            for (slot, v) in d.group_colors.iter_mut().zip(colors) {
+                *slot = rgb(Some(v)).unwrap_or(*slot);
+            }
+        }
     }
     s.desktop_double_click = boolean(node.get("desktop_double_click")).unwrap_or(false);
 }
@@ -262,6 +297,9 @@ fn read_items(array: &[Value]) -> Vec<Item> {
                     .map(str::to_owned)
                     .unwrap_or_else(|| crate::items::default_name(path)),
                 path: path.to_owned(),
+                color: number(obj.get("color"))
+                    .filter(|c| (0.0..BUTTON_COLORS as f64).contains(c))
+                    .map_or(0, |c| c as usize),
             })
         })
         .collect()
@@ -338,12 +376,22 @@ pub fn serialize(config: &Config) -> String {
                 "transparency": b.transparency,
                 "text_color": [b.text_color.0, b.text_color.1, b.text_color.2],
                 "bold_text": b.bold_text,
+                "group_colors": b.group_colors.iter().map(|c| [c.0, c.1, c.2]).collect::<Vec<_>>(),
             },
             "desktop_double_click": s.desktop_double_click,
         },
-        "items": config.items.iter().map(|i| json!({ "name": i.name, "path": i.path })).collect::<Vec<_>>(),
+        "items": config.items.iter().map(item_json).collect::<Vec<_>>(),
     });
     serde_json::to_string_pretty(&root).unwrap_or_default()
+}
+
+/// 標準の色のアイテムは `color` を書かない (v1 と同じ形のまま)。
+fn item_json(i: &Item) -> Value {
+    let mut v = json!({ "name": i.name, "path": i.path });
+    if i.color != 0 {
+        v["color"] = json!(i.color);
+    }
+    v
 }
 
 // ───────────── ファイル ─────────────
@@ -461,11 +509,24 @@ mod tests {
             transparency: 40,
             text_color: Rgb(250, 251, 252),
             bold_text: true,
+            group_colors: [
+                Rgb(10, 0, 0),
+                Rgb(0, 20, 0),
+                Rgb(0, 0, 30),
+                Rgb(4, 5, 6),
+                Rgb(7, 8, 9),
+            ],
         };
         c.settings.desktop_double_click = true;
         c.items.push(Item {
             name: "Example".into(),
             path: r"C:\Path\To\Example.exe".into(),
+            color: 0,
+        });
+        c.items.push(Item {
+            name: "Grouped".into(),
+            path: "notepad".into(),
+            color: 3,
         });
         let (parsed, legacy) = parse(&serialize(&c)).unwrap();
         assert!(!legacy);
@@ -516,9 +577,31 @@ mod tests {
             c.items,
             vec![Item {
                 name: "a.exe".into(),
-                path: r"C:\a.exe".into()
+                path: r"C:\a.exe".into(),
+                color: 0,
             }]
         );
+    }
+
+    #[test]
+    fn button_colors() {
+        let (c, _) = parse(
+            r#"{"settings":{"item_button":{"group_colors":[[1,2,3],"x",[4,5,6]]}},
+               "items":[{"path":"a","color":2},{"path":"b","color":9},{"path":"c","color":"red"},{"path":"d"}]}"#,
+        )
+        .unwrap();
+        let b = &c.settings.item_button;
+        assert_eq!(b.group_colors[0], Rgb(1, 2, 3));
+        assert_eq!(b.group_colors[1], DEFAULT_GROUP_COLORS[1]);
+        assert_eq!(b.group_colors[2], Rgb(4, 5, 6));
+        assert_eq!(b.group_colors[4], DEFAULT_GROUP_COLORS[4]);
+        assert_eq!(b.color(3), Rgb(4, 5, 6));
+        assert_eq!(b.color(0), b.background_color);
+        let colors: Vec<_> = c.items.iter().map(|i| i.color).collect();
+        assert_eq!(colors, [2, 0, 0, 0]);
+        // 標準の色のアイテムは color を書かない (v1 と同じ形)
+        let json = serialize(&c);
+        assert_eq!(json.matches("\"color\"").count(), 1);
     }
 
     #[test]

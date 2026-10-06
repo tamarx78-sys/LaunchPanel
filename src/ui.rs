@@ -183,17 +183,20 @@ pub fn swatch(gfx: &Gfx, r: Rect, color: Color, st: State) {
 }
 
 /// アイテムボタン (アイコンと名前)。メインウィンドウと設定画面のプレビューで共通。
+/// `color` はボタンの色番号 (0 = 標準、1～5 = グループの色)。
+#[allow(clippy::too_many_arguments)]
 pub fn item_button(
     gfx: &Gfx,
     r: Rect,
     name: &str,
     icon: Option<&windows::Win32::Graphics::Direct2D::ID2D1Bitmap>,
     s: &crate::config::ItemButtonSettings,
+    color: usize,
     hovered: bool,
     opacity: f32,
 ) {
     const ICON: f32 = 20.0;
-    let bg = s.background_color;
+    let bg = s.color(color);
     gfx.fill_round(
         r,
         5.0,

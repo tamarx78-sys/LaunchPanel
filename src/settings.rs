@@ -29,7 +29,7 @@ use windows::core::{PCWSTR, w};
 use crate::appearance::Look;
 use crate::color::{self, Hsv};
 use crate::config::{
-    Backdrop, ItemButtonSettings, MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH, Rgb, Settings,
+    BUTTON_COLORS, Backdrop, ItemButtonSettings, MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH, Rgb, Settings,
 };
 use crate::dialog::{self, Dialog};
 use crate::platform::icon::Pixels;
@@ -106,7 +106,8 @@ enum T {
     BackdropKind(usize),
     Blur,
     Tint,
-    BgColor,
+    /// ボタンの背景色 (0 = 標準、1～5 = グループの色)
+    ButtonColor(usize),
     Transparency,
     TextColor,
     Bold,
@@ -127,7 +128,8 @@ enum T {
 
 #[derive(Clone, Copy, PartialEq)]
 enum ColorTarget {
-    Background,
+    /// ボタンの背景色 (色番号)
+    Button(usize),
     Text,
 }
 
@@ -363,7 +365,32 @@ impl SettingsDialog {
         // 3. ボタン
         let b = &self.draft.item_button;
         heading(&mut l, &mut y, "ボタン");
-        color_row(&mut l, &mut y, "背景色", T::BgColor, b.background_color);
+        color_row(
+            &mut l,
+            &mut y,
+            "背景色 (標準)",
+            T::ButtonColor(0),
+            b.background_color,
+        );
+        // グループの色 1～5 は色見本だけを右詰めで並べる
+        l.texts.push((
+            "グループの色 (1～5)".into(),
+            Rect::new(MARGIN, y, cw, ROW),
+            ui::TEXT,
+            TextStyle::Label,
+        ));
+        for i in 1..BUTTON_COLORS {
+            let x = right - (BUTTON_COLORS - i) as f32 * 42.0 + 6.0;
+            l.controls
+                .push((T::ButtonColor(i), Rect::new(x, y + 8.0, 36.0, 28.0)));
+        }
+        y += ROW;
+        caption(
+            &mut l,
+            &mut y,
+            "ボタンの右クリックメニューの「ボタンの色」か編集画面で、ボタンごとに色を割り当てられます。",
+            ui::MUTED,
+        );
         slider_row(
             &mut l,
             &mut y,
@@ -741,7 +768,7 @@ impl SettingsDialog {
 
     fn open_picker(&mut self, target: ColorTarget, anchor: Rect) {
         let c = match target {
-            ColorTarget::Background => self.draft.item_button.background_color,
+            ColorTarget::Button(i) => self.draft.item_button.color(i),
             ColorTarget::Text => self.draft.item_button.text_color,
         };
         self.picker = Some(Picker {
@@ -764,7 +791,7 @@ impl SettingsDialog {
             h
         });
         match p.target {
-            ColorTarget::Background => self.draft.item_button.background_color = c,
+            ColorTarget::Button(i) => self.draft.item_button.set_color(i, c),
             ColorTarget::Text => self.draft.item_button.text_color = c,
         }
     }
@@ -913,8 +940,8 @@ impl SettingsDialog {
                 self.draft.backdrop = [Backdrop::None, Backdrop::Wallpaper, Backdrop::Acrylic][i];
                 self.preview_look();
             }
-            T::BgColor => self.open_picker(
-                ColorTarget::Background,
+            T::ButtonColor(i) => self.open_picker(
+                ColorTarget::Button(i),
                 anchor.unwrap_or(Rect::new(x, y, 0.0, 0.0)),
             ),
             T::TextColor => self.open_picker(
@@ -1081,7 +1108,7 @@ impl SettingsDialog {
             T::Browse => ui::button(gfx, r, "参照...", false, st),
             T::Clear => ui::button(gfx, r, "クリア", false, st),
             T::Reset => ui::button(gfx, r, "デフォルトに戻す", false, st),
-            T::BgColor => ui::swatch(gfx, r, rgb(d.item_button.background_color), st),
+            T::ButtonColor(i) => ui::swatch(gfx, r, rgb(d.item_button.color(i)), st),
             T::TextColor => ui::swatch(gfx, r, rgb(d.item_button.text_color), st),
             T::Modifier(i) => {
                 let h = &d.hotkey;
@@ -1162,12 +1189,18 @@ impl SettingsDialog {
         );
         let hovered = self.hover == Some(T::Preview)
             && button.contains_point(crate::dialog::cursor(self.hwnd));
+        // ボタンの色を選んでいる間は、その色で見せる
+        let color = match self.picker.as_ref().map(|p| p.target) {
+            Some(ColorTarget::Button(i)) => i,
+            _ => 0,
+        };
         ui::item_button(
             gfx,
             button,
-            "プレビュー",
+            &format!("プレビュー ({})", crate::app::color_label(color)),
             self.icon_bitmap.as_ref().map(|(_, b)| b),
             &self.draft.item_button,
+            color,
             hovered,
             1.0,
         );
@@ -1229,7 +1262,7 @@ impl SettingsDialog {
             }
         }
         let c = match p.target {
-            ColorTarget::Background => self.draft.item_button.background_color,
+            ColorTarget::Button(i) => self.draft.item_button.color(i),
             ColorTarget::Text => self.draft.item_button.text_color,
         };
         let close = rects.last().unwrap().1;

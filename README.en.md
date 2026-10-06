@@ -21,6 +21,7 @@ The screenshots show the Japanese UI.
 - Background: image, blurred wallpaper, or acrylic (windows behind show through), with adjustable blur strength and darkness
 - Window shadow with adjustable strength
 - Customizable button color, transparency, text color, and bold text
+- Group buttons visually by giving each one the standard color or one of colors 1–5 (from the right-click menu or the edit window)
 - Settings window that works entirely with the mouse (sliders, switches, a color picker, drag and drop)
 - Global hotkey (default: `Ctrl + Alt + Shift + M`)
 - Double-click empty desktop space to show the window there (experimental)
@@ -60,7 +61,7 @@ Things to check:
 
 ## Download
 
-Get `LaunchPanel-v2.0.1.zip` from [Releases](https://github.com/tamarx78-sys/LaunchPanel/releases), put `LaunchPanel.exe` in a writable folder, and run it.
+Get `LaunchPanel-v2.1.0.zip` from [Releases](https://github.com/tamarx78-sys/LaunchPanel/releases), put `LaunchPanel.exe` in a writable folder, and run it.
 
 ## Build
 
@@ -76,7 +77,7 @@ The executable is written to `target/release/LaunchPanel.exe`.
 
 1. Drag and drop files or folders onto the window to register them.
 2. Click a registered button to open its target. Drag a button to reorder it.
-3. Right-click a button to edit, delete, or move it up or down.
+3. Right-click a button to edit, delete, change its color, or move it up or down.
 4. Use the gear button to change the appearance, background, and hotkey.
 5. Drag the empty part of the top bar to move the window. Drag an edge or corner to resize it.
 6. Closing the window hides it. Show it again from the system tray or with the hotkey. To quit completely, choose Exit from the tray menu.

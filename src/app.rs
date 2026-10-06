@@ -12,8 +12,9 @@ use windows::Win32::Graphics::Dwm::{
     DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DwmSetWindowAttribute,
 };
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY,
-    MONITORINFO, MonitorFromPoint, ValidateRect,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateDIBSection, DIB_RGB_COLORS, DeleteObject,
+    GetMonitorInfoW, HBITMAP, HGDIOBJ, InvalidateRect, MONITOR_DEFAULTTONEAREST,
+    MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint, ValidateRect,
 };
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
@@ -24,7 +25,7 @@ use windows::Win32::UI::Shell::{DragFinish, DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
-use crate::config::{Config, Item, MIN_INNER_SIZE, Settings, Store};
+use crate::config::{BUTTON_COLORS, Config, Item, MIN_INNER_SIZE, Rgb, Settings, Store};
 use crate::platform::icon::Pixels;
 use crate::platform::wide::to_wide;
 use crate::platform::{desktop, foreground, shadow, shell};
@@ -692,12 +693,44 @@ impl App {
             return;
         };
         let last = self.entries.len() - 1;
+        let current_color = self.entries[index].item.color;
+        let swatch_px = (16.0 * self.scale()).round() as i32;
         let mut pt = POINT::default();
-        // SAFETY: メニューは関数内で生成・破棄する
+        let mut swatches = Vec::new();
+        // SAFETY: メニューと色見本のビットマップは関数内で生成・破棄する
         let cmd = unsafe {
             let Ok(menu) = CreatePopupMenu() else { return };
             let _ = AppendMenuW(menu, MF_STRING, 1, w!("編集..."));
             let _ = AppendMenuW(menu, MF_STRING, 2, w!("削除"));
+            // ボタンの色 (標準 + グループの色)。色見本付きで、今の色に印を付ける
+            if let Ok(colors) = CreatePopupMenu() {
+                for i in 0..BUTTON_COLORS {
+                    // 色見本が印の欄に描かれてチェックが見えないので、今の色は名前に印を付ける
+                    let label = to_wide(&if i == current_color {
+                        format!("{}  ✓", color_label(i))
+                    } else {
+                        color_label(i)
+                    });
+                    let bitmap = menu_swatch(self.settings.item_button.color(i), swatch_px);
+                    swatches.extend(bitmap);
+                    let info = MENUITEMINFOW {
+                        cbSize: size_of::<MENUITEMINFOW>() as u32,
+                        fMask: MIIM_ID | MIIM_STRING | MIIM_FTYPE | MIIM_STATE | MIIM_BITMAP,
+                        fType: MFT_RADIOCHECK,
+                        fState: if i == current_color {
+                            MFS_CHECKED
+                        } else {
+                            MFS_UNCHECKED
+                        },
+                        wID: COLOR_COMMAND + i as u32,
+                        dwTypeData: windows::core::PWSTR(label.as_ptr() as *mut _),
+                        hbmpItem: bitmap.unwrap_or_default(),
+                        ..Default::default()
+                    };
+                    let _ = InsertMenuItemW(colors, i as u32, true, &info);
+                }
+                let _ = AppendMenuW(menu, MF_POPUP, colors.0 as usize, w!("ボタンの色"));
+            }
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
             let _ = AppendMenuW(
                 menu,
@@ -724,11 +757,21 @@ impl App {
             );
             self.modal -= 1;
             let _ = DestroyMenu(menu);
+            for b in swatches {
+                let _ = DeleteObject(HGDIOBJ(b.0));
+            }
             cmd.0
         };
         match cmd {
             1 => self.open_edit(id),
             2 => self.delete_item(id),
+            c if (COLOR_COMMAND as i32..COLOR_COMMAND as i32 + BUTTON_COLORS as i32)
+                .contains(&c) =>
+            {
+                self.entries[index].item.color = (c - COLOR_COMMAND as i32) as usize;
+                self.save();
+                self.invalidate();
+            }
             3 | 4 if items::move_by(&mut self.entries, index, if cmd == 3 { -1 } else { 1 }) => {
                 self.save();
                 self.relayout(true);
@@ -918,7 +961,7 @@ impl App {
 
     fn open_edit(&mut self, id: u64) {
         let Some(e) = self.entry(id) else { return };
-        if crate::edit::open(self.hwnd, id, &e.item) {
+        if crate::edit::open(self.hwnd, id, &e.item, &self.settings.item_button) {
             // 編集中は本体を自動非表示にしない
             self.modal += 1;
         }
@@ -935,6 +978,7 @@ impl App {
         let path_changed = e.item.path != r.path;
         e.item.name = r.name;
         e.item.path = r.path;
+        e.item.color = r.color;
         if path_changed {
             // パスが変わったらアイコンを取り直す
             e.icon = None;
@@ -1208,6 +1252,7 @@ impl App {
             &e.item.name,
             icon,
             &self.settings.item_button,
+            e.item.color,
             hovered,
             opacity,
         );
@@ -1437,6 +1482,61 @@ impl App {
 }
 
 /// 診断ログ用のウィンドウ表記 (クラス名)。
+/// 右クリックメニューの「ボタンの色」の最初のコマンド ID (色番号を足す)。
+const COLOR_COMMAND: u32 = 100;
+
+/// ボタンの色番号の表示名。
+pub fn color_label(index: usize) -> String {
+    if index == 0 {
+        "標準".into()
+    } else {
+        format!("色 {index}")
+    }
+}
+
+/// メニュー用の色見本 (角を丸めた四角、枠付き、32bpp のアルファ付き)。破棄は呼び出し側。
+fn menu_swatch(c: Rgb, size: i32) -> Option<HBITMAP> {
+    let size = size.max(8);
+    let info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: size,
+            biHeight: -size,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
+    // SAFETY: 大きさを指定した DIB を作り、確保された画素バッファにだけ書く
+    unsafe {
+        let bitmap = CreateDIBSection(None, &info, DIB_RGB_COLORS, &mut bits, None, 0).ok()?;
+        if bits.is_null() {
+            let _ = DeleteObject(HGDIOBJ(bitmap.0));
+            return None;
+        }
+        let px = std::slice::from_raw_parts_mut(bits as *mut [u8; 4], (size * size) as usize);
+        let last = size - 1;
+        for y in 0..size {
+            for x in 0..size {
+                let edge = x == 0 || y == 0 || x == last || y == last;
+                let corner = (x == 0 || x == last) && (y == 0 || y == last);
+                // 事前乗算済みの BGRA。角は透明、外周は暗い枠
+                px[(y * size + x) as usize] = if corner {
+                    [0, 0, 0, 0]
+                } else if edge {
+                    [0x50, 0x50, 0x50, 0xFF]
+                } else {
+                    [c.2, c.1, c.0, 0xFF]
+                };
+            }
+        }
+        Some(bitmap)
+    }
+}
+
 fn window_label(hwnd: HWND) -> String {
     if hwnd.is_invalid() {
         return "なし".into();

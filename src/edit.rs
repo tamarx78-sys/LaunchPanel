@@ -2,7 +2,7 @@
 //!
 //! 名前だけは文字の入力欄 (Windows 標準の EDIT。日本語入力・コピー＆ペーストは OS に任せる)。
 //! パスは直接入力させず、ファイル・フォルダー・ブラウザーのリンクのドロップ、
-//! またはファイル/フォルダーの選択ダイアログで変更する。
+//! またはファイル/フォルダーの選択ダイアログで変更する。ボタンの色は色見本から選ぶ。
 
 use std::cell::RefCell;
 
@@ -26,7 +26,7 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
-use crate::config::Item;
+use crate::config::{BUTTON_COLORS, Item, ItemButtonSettings, Rgb};
 use crate::dialog::{self, Dialog};
 use crate::droptarget::{self, DROP_DONE, DROP_ENTER, DROP_LEAVE, WM_APP_DROP};
 use crate::platform::icon::{self, Pixels};
@@ -44,13 +44,17 @@ const EDIT_H: f32 = 20.0;
 const PATH_BOX_Y: f32 = 146.0;
 const PATH_BOX_H: f32 = 68.0;
 const BUTTONS_Y: f32 = 262.0;
+const COLOR_Y: f32 = 346.0;
+const SWATCH_W: f32 = 44.0;
+const SWATCH_H: f32 = 30.0;
 const EDIT_ID: usize = 100;
 
-/// 保存された (アイテム ID, 名前, パス)。
+/// 保存された (アイテム ID, 名前, パス, ボタンの色番号)。
 pub struct EditResult {
     pub id: u64,
     pub name: String,
     pub path: String,
+    pub color: usize,
 }
 
 thread_local! {
@@ -61,15 +65,16 @@ pub fn take_result() -> Option<EditResult> {
     RESULT.with(|r| r.borrow_mut().take())
 }
 
-/// 編集ダイアログを開く。
-pub fn open(owner: HWND, id: u64, item: &Item) -> bool {
+/// 編集ダイアログを開く。`buttons` は色見本に使うボタンの外観。
+pub fn open(owner: HWND, id: u64, item: &Item, buttons: &ItemButtonSettings) -> bool {
     let item = item.clone();
+    let palette: [Rgb; BUTTON_COLORS] = std::array::from_fn(|i| buttons.color(i));
     dialog::open(
         owner,
         "アイテムの編集",
         480.0,
-        BUTTONS_Y as f64 + 30.0 + 24.0 + FOOTER as f64,
-        move |hwnd| Box::new(EditDialog::new(hwnd, owner, id, item)),
+        COLOR_Y as f64 + SWATCH_H as f64 + 24.0 + 24.0 + FOOTER as f64,
+        move |hwnd| Box::new(EditDialog::new(hwnd, owner, id, item, palette)),
     )
     .is_some()
 }
@@ -78,6 +83,7 @@ pub fn open(owner: HWND, id: u64, item: &Item) -> bool {
 enum T {
     File,
     Folder,
+    Color(usize),
     Ok,
     Cancel,
 }
@@ -87,6 +93,8 @@ struct EditDialog {
     owner: HWND,
     id: u64,
     path: String,
+    color: usize,
+    palette: [Rgb; BUTTON_COLORS],
     name_edit: HWND,
     font: HFONT,
     edit_brush: HBRUSH,
@@ -103,7 +111,7 @@ struct EditDialog {
 }
 
 impl EditDialog {
-    fn new(hwnd: HWND, owner: HWND, id: u64, item: Item) -> Self {
+    fn new(hwnd: HWND, owner: HWND, id: u64, item: Item, palette: [Rgb; BUTTON_COLORS]) -> Self {
         let s = dialog::scale(hwnd);
         let mut rc = windows::Win32::Foundation::RECT::default();
         // SAFETY: 子ウィンドウ (名前の入力欄) の生成と設定
@@ -144,6 +152,8 @@ impl EditDialog {
             owner,
             id,
             path: item.path,
+            color: item.color.min(BUTTON_COLORS - 1),
+            palette,
             name_edit,
             font: HFONT::default(),
             edit_brush,
@@ -198,20 +208,32 @@ impl EditDialog {
         Rect::new(MARGIN, PATH_BOX_Y, self.content_width(), PATH_BOX_H)
     }
 
-    fn controls(&self) -> [(T, Rect); 4] {
+    fn controls(&self) -> Vec<(T, Rect)> {
         let y = self.height - FOOTER + (FOOTER - 32.0) / 2.0;
-        [
+        let mut v = vec![
             (T::File, Rect::new(MARGIN, BUTTONS_Y, 120.0, 30.0)),
             (T::Folder, Rect::new(MARGIN + 128.0, BUTTONS_Y, 120.0, 30.0)),
-            (
-                T::Ok,
-                Rect::new(self.width - MARGIN - 108.0 * 2.0 + 8.0, y, 100.0, 32.0),
-            ),
-            (
-                T::Cancel,
-                Rect::new(self.width - MARGIN - 100.0, y, 100.0, 32.0),
-            ),
-        ]
+        ];
+        for i in 0..BUTTON_COLORS {
+            v.push((
+                T::Color(i),
+                Rect::new(
+                    MARGIN + i as f32 * (SWATCH_W + 10.0),
+                    COLOR_Y,
+                    SWATCH_W,
+                    SWATCH_H,
+                ),
+            ));
+        }
+        v.push((
+            T::Ok,
+            Rect::new(self.width - MARGIN - 108.0 * 2.0 + 8.0, y, 100.0, 32.0),
+        ));
+        v.push((
+            T::Cancel,
+            Rect::new(self.width - MARGIN - 100.0, y, 100.0, 32.0),
+        ));
+        v
     }
 
     fn hit(&self, x: f32, y: f32) -> Option<T> {
@@ -347,6 +369,7 @@ impl EditDialog {
                     id: self.id,
                     name,
                     path: self.path.clone(),
+                    color: self.color,
                 })
             });
         }
@@ -450,6 +473,22 @@ impl EditDialog {
             TextStyle::Caption,
         );
 
+        gfx.text(
+            "ボタンの色",
+            Rect::new(MARGIN, COLOR_Y - 30.0, cw, 26.0),
+            ui::TEXT,
+            TextStyle::Label,
+        );
+        gfx.text(
+            &format!(
+                "{} (それぞれの色は設定画面で変えられます)",
+                crate::app::color_label(self.color)
+            ),
+            Rect::new(MARGIN, COLOR_Y + SWATCH_H + 8.0, cw, 20.0),
+            ui::MUTED,
+            TextStyle::Caption,
+        );
+
         gfx.fill_rect(
             Rect::new(0.0, self.height - FOOTER, self.width, FOOTER),
             ui::PANEL,
@@ -463,6 +502,19 @@ impl EditDialog {
             let label = match t {
                 T::File => "ファイル...",
                 T::Folder => "フォルダー...",
+                T::Color(i) => {
+                    let c = self.palette[i];
+                    ui::swatch(gfx, r, Color::rgba(c.0, c.1, c.2, 255), st);
+                    if i == self.color {
+                        // 選んでいる色は外側の輪と印で示す
+                        gfx.stroke_round(r.inset(-3.0, -3.0), 8.0, ui::ACCENT, 2.0);
+                        let light =
+                            c.0 as u32 * 299 + c.1 as u32 * 587 + c.2 as u32 * 114 > 150_000;
+                        let mark = if light { ui::BG } else { ui::TEXT };
+                        gfx.text("\u{E73E}", r, mark, TextStyle::Glyph);
+                    }
+                    continue;
+                }
                 T::Ok => "保存",
                 T::Cancel => "キャンセル",
             };
@@ -595,6 +647,7 @@ impl Dialog for EditDialog {
                     match t {
                         T::File => self.browse(false),
                         T::Folder => self.browse(true),
+                        T::Color(i) => self.color = i,
                         T::Ok => self.finish(true),
                         T::Cancel => self.finish(false),
                     }
