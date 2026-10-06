@@ -6,7 +6,6 @@ use windows::Win32::Foundation::{
     ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, WPARAM,
 };
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
-use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
 use windows::Win32::System::Threading::{
     CreateEventW, CreateMutexW, INFINITE, SetEvent, WaitForSingleObject,
 };
@@ -89,7 +88,7 @@ impl SingleInstance {
 
 /// OS の標準関連付けに従って開く。失敗したら false (例外的な状態でも落とさない)。
 pub fn launch(hwnd: HWND, path: &str) -> bool {
-    let target = expand_env(path.trim());
+    let target = crate::platform::wide::expand_env(path.trim());
     let file = to_wide(&target);
     // ローカルのファイルは自身のフォルダーを作業フォルダーにする
     let dir = std::path::Path::new(&target)
@@ -119,21 +118,6 @@ pub fn launch(hwnd: HWND, path: &str) -> bool {
         ));
     }
     ok
-}
-
-fn expand_env(path: &str) -> String {
-    if !path.contains('%') {
-        return path.to_owned();
-    }
-    let src = to_wide(path);
-    let mut buf = vec![0u16; 32768];
-    // SAFETY: バッファ長はスライスで渡す
-    let n = unsafe { ExpandEnvironmentStringsW(PCWSTR(src.as_ptr()), Some(&mut buf)) } as usize;
-    if n == 0 || n > buf.len() {
-        path.to_owned()
-    } else {
-        String::from_utf16_lossy(&buf[..n - 1])
-    }
 }
 
 // ───────────── アイコン ─────────────

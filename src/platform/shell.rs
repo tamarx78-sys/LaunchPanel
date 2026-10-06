@@ -1,12 +1,11 @@
 //! タスクトレイアイコンとグローバルホットキー。
 //!
 //! 専用スレッドに非表示ウィンドウとメッセージループを持ち、UI スレッドの負荷と無関係に
-//! トレイ操作・ホットキーを受け付ける。イベントはコールバックで C# 側へ通知する
-//! (C# 側で UI スレッドへ転送すること)。
+//! トレイ操作・ホットキーを受け付ける。操作はコールバックで通知する (このスレッドから
+//! 呼ばれるので、受け取り側で UI スレッドへ転送すること)。
 
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::{Mutex, OnceLock, mpsc};
 use std::thread::JoinHandle;
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
@@ -20,40 +19,51 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
-use crate::platform::wide::{from_ptr, to_wide};
+use crate::platform::wide::to_wide;
 
-/// C# へ通知するイベント。
-#[repr(u32)]
-#[derive(Clone, Copy)]
-enum ShellEvent {
-    Show = 1,
-    Settings = 2,
-    Exit = 3,
-    Hotkey = 4,
+/// トレイ・ホットキーからの操作。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellEvent {
+    /// トレイアイコンのクリック、またはメニューの「表示」
+    Show,
+    Settings,
+    Exit,
+    Hotkey,
 }
 
-/// `lp_shell_start` の戻り値ビット。
-const STATUS_TRAY_OK: u32 = 1;
-const STATUS_HOTKEY_OK: u32 = 2;
-const STATUS_ALREADY_RUNNING: u32 = 0x8000_0000;
+impl ShellEvent {
+    const ALL: [Self; 4] = [Self::Show, Self::Settings, Self::Exit, Self::Hotkey];
 
-type EventCallback = extern "system" fn(event: u32);
+    /// ウィンドウメッセージで受け渡すための番号。
+    pub fn to_wparam(self) -> usize {
+        self as usize
+    }
+
+    pub fn from_wparam(w: usize) -> Option<Self> {
+        Self::ALL.get(w).copied()
+    }
+}
+
+const TOOLTIP: &str = "LaunchPanel";
+/// メニューの項目 (コマンド ID は並び順 + 1)
+const MENU: [(&str, ShellEvent); 3] = [
+    ("表示", ShellEvent::Show),
+    ("設定", ShellEvent::Settings),
+    ("終了", ShellEvent::Exit),
+];
 
 const WM_TRAY: u32 = WM_APP + 1;
 const TRAY_ID: u32 = 1;
 const HOTKEY_ID: i32 = 1;
-const CMD_SHOW: usize = 1;
-const CMD_SETTINGS: usize = 2;
-const CMD_EXIT: usize = 3;
 
-static CALLBACK: AtomicUsize = AtomicUsize::new(0);
+static CALLBACK: OnceLock<fn(ShellEvent)> = OnceLock::new();
 static HWND_VALUE: AtomicIsize = AtomicIsize::new(0);
 static THREAD: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 
 /// ウィンドウスレッドだけが触る状態。
 struct TrayState {
     tooltip: Vec<u16>,
-    labels: [Vec<u16>; 3],
+    labels: Vec<Vec<u16>>,
     icon: HICON,
     taskbar_created: u32,
 }
@@ -62,58 +72,27 @@ thread_local! {
     static STATE: std::cell::RefCell<Option<TrayState>> = const { std::cell::RefCell::new(None) };
 }
 
-/// トレイとホットキーのスレッドを開始する。
-///
-/// - `labels`: メニュー「表示」「設定」「終了」の文字列
-/// - `icon_path`: .ico ファイルのパス (読めなければ既定アイコン)
-/// - `modifiers`: MOD_ALT=1, MOD_CONTROL=2, MOD_SHIFT=4, MOD_WIN=8 の組合せ
-/// - `vk`: 仮想キーコード。0 ならホットキーを登録しない
-///
-/// 戻り値は STATUS_* ビットの組合せ。ホットキー登録に失敗してもトレイは動作を続ける。
-///
-/// # Safety
-/// 文字列引数は NUL 終端の UTF-16 か null。`callback` はプロセス終了まで有効であること。
-pub unsafe extern "system" fn lp_shell_start(
-    callback: EventCallback,
-    tooltip: *const u16,
-    show_label: *const u16,
-    settings_label: *const u16,
-    exit_label: *const u16,
-    icon_path: *const u16,
-    modifiers: u32,
-    vk: u32,
-) -> u32 {
+/// トレイとホットキーのスレッドを開始する。`modifiers` は MOD_ALT=1, MOD_CONTROL=2,
+/// MOD_SHIFT=4, MOD_WIN=8 の組合せ。ホットキーを登録できたら true (登録できなくても
+/// トレイは動作を続ける)。既に動作中なら何もしない。
+pub fn start(on_event: fn(ShellEvent), modifiers: u32, key: char) -> bool {
     let mut thread = THREAD.lock().unwrap_or_else(|e| e.into_inner());
     if thread.is_some() {
-        return STATUS_ALREADY_RUNNING;
+        return true;
     }
-    CALLBACK.store(callback as usize, Ordering::SeqCst);
-
-    // SAFETY: 呼び出し側の保証どおり
-    let (tooltip, labels, icon_path) = unsafe {
-        (
-            from_ptr(tooltip),
-            [
-                from_ptr(show_label),
-                from_ptr(settings_label),
-                from_ptr(exit_label),
-            ],
-            from_ptr(icon_path),
-        )
-    };
-
+    let _ = CALLBACK.set(on_event);
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::Builder::new()
         .name("lp-shell".into())
-        .spawn(move || run(tooltip, labels, icon_path, modifiers, vk, tx))
+        .spawn(move || run(modifiers, key as u32, tx))
         .expect("failed to spawn shell thread");
-    let status = rx.recv().unwrap_or(0);
+    let hotkey_ok = rx.recv().unwrap_or(false);
     *thread = Some(handle);
-    status
+    hotkey_ok
 }
 
 /// トレイアイコンを削除し、スレッドを終了する。
-pub extern "system" fn lp_shell_stop() {
+pub fn stop() {
     let handle = THREAD.lock().unwrap_or_else(|e| e.into_inner()).take();
     let hwnd = HWND_VALUE.load(Ordering::SeqCst);
     if hwnd != 0 {
@@ -128,22 +107,12 @@ pub extern "system" fn lp_shell_stop() {
 }
 
 fn notify(event: ShellEvent) {
-    let cb = CALLBACK.load(Ordering::SeqCst);
-    if cb != 0 {
-        // SAFETY: lp_shell_start で受け取った有効な関数ポインタ
-        let cb: EventCallback = unsafe { std::mem::transmute(cb) };
-        cb(event as u32);
+    if let Some(cb) = CALLBACK.get() {
+        cb(event);
     }
 }
 
-fn run(
-    tooltip: String,
-    labels: [String; 3],
-    icon_path: String,
-    modifiers: u32,
-    vk: u32,
-    ready: mpsc::Sender<u32>,
-) {
+fn run(modifiers: u32, vk: u32, ready: mpsc::Sender<bool>) {
     // SAFETY: Win32 API 呼び出し。ハンドルはすべてこのスレッド内で生成・破棄する
     unsafe {
         let instance = GetModuleHandleW(None).unwrap_or_default();
@@ -156,11 +125,11 @@ fn run(
         };
         RegisterClassW(&wc);
 
-        let icon = load_icon(&icon_path);
+        let icon = load_icon();
         STATE.with(|s| {
             *s.borrow_mut() = Some(TrayState {
-                tooltip: to_wide(&tooltip),
-                labels: labels.map(|l| to_wide(&l)),
+                tooltip: to_wide(TOOLTIP),
+                labels: MENU.iter().map(|(l, _)| to_wide(l)).collect(),
                 icon,
                 taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")),
             })
@@ -184,28 +153,24 @@ fn run(
         ) {
             Ok(h) => h,
             Err(_) => {
-                let _ = ready.send(0);
+                crate::log::write("トレイ用のウィンドウを作成できませんでした。");
+                let _ = ready.send(false);
                 return;
             }
         };
         HWND_VALUE.store(hwnd.0 as isize, Ordering::SeqCst);
 
-        let mut status = 0;
-        if add_tray_icon(hwnd) {
-            status |= STATUS_TRAY_OK;
+        if !add_tray_icon(hwnd) {
+            crate::log::write("トレイアイコンを追加できませんでした。");
         }
-        if vk != 0
-            && RegisterHotKey(
-                Some(hwnd),
-                HOTKEY_ID,
-                HOT_KEY_MODIFIERS(modifiers) | MOD_NOREPEAT,
-                vk,
-            )
-            .is_ok()
-        {
-            status |= STATUS_HOTKEY_OK;
-        }
-        let _ = ready.send(status);
+        let hotkey_ok = RegisterHotKey(
+            Some(hwnd),
+            HOTKEY_ID,
+            HOT_KEY_MODIFIERS(modifiers) | MOD_NOREPEAT,
+            vk,
+        )
+        .is_ok();
+        let _ = ready.send(hotkey_ok);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
@@ -216,37 +181,23 @@ fn run(
     }
 }
 
-unsafe fn load_icon(path: &str) -> HICON {
+/// exe に埋め込んだアプリのアイコン (リソース ID 1) の小サイズ。
+unsafe fn load_icon() -> HICON {
     // SAFETY: Win32 API 呼び出し
     unsafe {
         let size = GetSystemMetrics(SM_CXSMICON);
-        if path.is_empty() {
-            // exe に埋め込んだアプリのアイコン (リソース ID 1)
-            let instance = GetModuleHandleW(None).unwrap_or_default();
-            if let Ok(h) = LoadImageW(
-                Some(instance.into()),
-                PCWSTR(1 as _),
-                IMAGE_ICON,
-                size,
-                size,
-                LR_DEFAULTCOLOR,
-            ) {
-                return HICON(h.0);
-            }
-        } else {
-            let wide = to_wide(path);
-            if let Ok(h) = LoadImageW(
-                None,
-                PCWSTR(wide.as_ptr()),
-                IMAGE_ICON,
-                size,
-                size,
-                LR_LOADFROMFILE,
-            ) {
-                return HICON(h.0);
-            }
+        let instance = GetModuleHandleW(None).unwrap_or_default();
+        match LoadImageW(
+            Some(instance.into()),
+            PCWSTR(1 as _),
+            IMAGE_ICON,
+            size,
+            size,
+            LR_DEFAULTCOLOR,
+        ) {
+            Ok(h) => HICON(h.0),
+            Err(_) => LoadIconW(None, IDI_APPLICATION).unwrap_or_default(),
         }
-        LoadIconW(None, IDI_APPLICATION).unwrap_or_default()
     }
 }
 
@@ -285,7 +236,7 @@ unsafe fn show_menu(hwnd: HWND) {
                 }
             }
         });
-        let _ = SetMenuDefaultItem(menu, CMD_SHOW as u32, 0);
+        let _ = SetMenuDefaultItem(menu, 1, 0);
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
         // メニュー外クリックで閉じるよう前面化が必要 (KB135788)
@@ -301,11 +252,8 @@ unsafe fn show_menu(hwnd: HWND) {
         );
         let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
         let _ = DestroyMenu(menu);
-        match cmd.0 as usize {
-            CMD_SHOW => notify(ShellEvent::Show),
-            CMD_SETTINGS => notify(ShellEvent::Settings),
-            CMD_EXIT => notify(ShellEvent::Exit),
-            _ => {}
+        if let Some((_, event)) = (cmd.0 as usize).checked_sub(1).and_then(|i| MENU.get(i)) {
+            notify(*event);
         }
     }
 }

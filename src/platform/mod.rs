@@ -5,6 +5,7 @@
 //! - `shadow`: 枠なしウィンドウの影 (追従するレイヤードウィンドウ)
 //! - `desktop`: デスクトップ空白ダブルクリックの検出
 //! - `foreground`: フォアグラウンドロック下でも確実に前面化する
+//! - `window`: 本体とダイアログで共通のウィンドウ操作
 
 pub mod desktop;
 pub mod foreground;
@@ -12,3 +13,4 @@ pub mod icon;
 pub mod shadow;
 pub mod shell;
 pub mod wide;
+pub mod window;

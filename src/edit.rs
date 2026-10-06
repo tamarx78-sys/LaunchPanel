@@ -7,22 +7,16 @@
 use std::cell::RefCell;
 
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::Graphics::Direct2D::ID2D1Bitmap;
 use windows::Win32::Graphics::Gdi::{
     CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreateSolidBrush, DEFAULT_CHARSET,
     DeleteObject, FW_NORMAL, HBRUSH, HDC, HFONT, HGDIOBJ, InvalidateRect, OUT_DEFAULT_PRECIS,
     SetBkColor, SetTextColor, ValidateRect,
 };
-use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetFocus, ReleaseCapture, SetCapture, SetFocus, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
-    VK_ESCAPE, VK_RETURN,
+    GetFocus, ReleaseCapture, SetCapture, SetFocus, VK_ESCAPE, VK_RETURN,
 };
-use windows::Win32::UI::Shell::{
-    DefSubclassProc, FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH,
-    SetWindowSubclass,
-};
+use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
@@ -31,7 +25,8 @@ use crate::dialog::{self, Dialog};
 use crate::droptarget::{self, DROP_DONE, DROP_ENTER, DROP_LEAVE, WM_APP_DROP};
 use crate::platform::icon::{self, Pixels};
 use crate::platform::wide::to_wide;
-use crate::render::{Color, Gfx, Rect, TextStyle};
+use crate::platform::window;
+use crate::render::{CachedBitmap, Color, Gfx, Rect, TextStyle};
 use crate::ui::{self, State};
 
 /// 編集ダイアログが閉じた (wParam: 保存なら 1)。結果は [`take_result`] で受け取る。
@@ -100,7 +95,7 @@ struct EditDialog {
     edit_brush: HBRUSH,
     gfx: Option<Gfx>,
     icon: Option<Pixels>,
-    icon_bitmap: Option<(u64, ID2D1Bitmap)>,
+    icon_bitmap: CachedBitmap,
     width: f32,
     height: f32,
     hover: Option<T>,
@@ -112,7 +107,7 @@ struct EditDialog {
 
 impl EditDialog {
     fn new(hwnd: HWND, owner: HWND, id: u64, item: Item, palette: [Rgb; BUTTON_COLORS]) -> Self {
-        let s = dialog::scale(hwnd);
+        let s = window::scale(hwnd);
         let mut rc = windows::Win32::Foundation::RECT::default();
         // SAFETY: 子ウィンドウ (名前の入力欄) の生成と設定
         let (name_edit, edit_brush) = unsafe {
@@ -245,7 +240,7 @@ impl EditDialog {
 
     /// DPI に合わせた入力欄のフォント。
     fn update_font(&mut self) {
-        let s = dialog::scale(self.hwnd);
+        let s = window::scale(self.hwnd);
         // SAFETY: フォントの生成と差し替え (古いものは解放する)
         unsafe {
             let font = CreateFontW(
@@ -279,7 +274,7 @@ impl EditDialog {
 
     /// 入力欄を枠の内側 (縦中央) に置く。枠は Direct2D で描く。
     fn place_edit(&self) {
-        let s = dialog::scale(self.hwnd);
+        let s = window::scale(self.hwnd);
         let f = self.name_frame();
         let (x, y, w, h) = (f.x + 10.0, f.y + (f.h - EDIT_H) / 2.0, f.w - 20.0, EDIT_H);
         // SAFETY: 子ウィンドウの移動
@@ -297,7 +292,7 @@ impl EditDialog {
     }
 
     fn load_icon(&mut self) {
-        let px = (32.0 * dialog::scale(self.hwnd)).ceil() as i32;
+        let px = (32.0 * window::scale(self.hwnd)).ceil() as i32;
         self.icon = icon::load(&self.path, px);
         self.icon_bitmap = None;
         self.invalidate();
@@ -312,33 +307,14 @@ impl EditDialog {
     }
 
     fn browse(&mut self, folder: bool) {
-        // SAFETY: COM のファイル/フォルダー選択ダイアログ
-        let chosen = unsafe {
-            let Ok(dlg) =
-                CoCreateInstance::<_, IFileOpenDialog>(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
-            else {
-                return;
-            };
-            if folder {
-                if let Ok(options) = dlg.GetOptions() {
-                    let _ = dlg.SetOptions(options | FOS_PICKFOLDERS);
-                }
-                let _ = dlg.SetTitle(w!("フォルダーの選択"));
-            } else {
-                let _ = dlg.SetTitle(w!("ファイルの選択"));
-            }
-            if dlg.Show(Some(self.hwnd)).is_err() {
-                return; // キャンセル
-            }
-            let Ok(item) = dlg.GetResult() else { return };
-            let Ok(p) = item.GetDisplayName(SIGDN_FILESYSPATH) else {
-                return;
-            };
-            let s = p.to_string().unwrap_or_default();
-            CoTaskMemFree(Some(p.0 as *const _));
-            s
+        let title = if folder {
+            "フォルダーの選択"
+        } else {
+            "ファイルの選択"
         };
-        self.set_path(chosen);
+        if let Some(path) = window::pick_file(self.hwnd, title, &[], folder) {
+            self.set_path(path);
+        }
     }
 
     fn name_text(&self) -> String {
@@ -391,18 +367,7 @@ impl EditDialog {
         if gfx.ensure_target(self.hwnd).is_err() {
             return;
         }
-        let generation = gfx.generation;
-        if self
-            .icon_bitmap
-            .as_ref()
-            .is_none_or(|(g, _)| *g != generation)
-        {
-            self.icon_bitmap = self
-                .icon
-                .as_ref()
-                .and_then(|p| gfx.create_bitmap(p))
-                .map(|b| (generation, b));
-        }
+        gfx.refresh_bitmap(&mut self.icon_bitmap, self.icon.as_ref());
         let gfx = self.gfx.as_ref().unwrap();
         let cw = self.content_width();
         gfx.begin(ui::BG);
@@ -538,38 +503,23 @@ impl Dialog for EditDialog {
             }
             WM_ERASEBKGND => return Some(LRESULT(1)),
             WM_SIZE => {
-                let (w, h) = (
-                    (lparam.0 & 0xFFFF) as u32,
-                    ((lparam.0 >> 16) & 0xFFFF) as u32,
-                );
+                let (w, h) = window::client_size(lparam);
                 if let Some(g) = &self.gfx {
                     g.resize(w, h);
                 }
-                let s = dialog::scale(hwnd);
+                let s = window::scale(hwnd);
                 self.width = w as f32 / s;
                 self.height = h as f32 / s;
                 self.place_edit();
                 self.invalidate();
             }
             WM_DPICHANGED => {
-                // SAFETY: lParam は推奨矩形
-                let r = unsafe { &*(lparam.0 as *const windows::Win32::Foundation::RECT) };
                 if let Some(g) = &self.gfx {
                     g.set_dpi((wparam.0 & 0xFFFF) as u32);
                 }
                 self.update_font();
-                // SAFETY: 自分のウィンドウの移動 (WM_SIZE で入力欄も置き直す)
-                unsafe {
-                    let _ = SetWindowPos(
-                        hwnd,
-                        None,
-                        r.left,
-                        r.top,
-                        r.right - r.left,
-                        r.bottom - r.top,
-                        SWP_NOZORDER | SWP_NOACTIVATE,
-                    );
-                }
+                // SAFETY: WM_DPICHANGED の lParam
+                unsafe { window::apply_suggested_rect(hwnd, lparam) };
             }
             WM_CTLCOLOREDIT => {
                 // 入力欄を暗い配色にする
@@ -590,29 +540,19 @@ impl Dialog for EditDialog {
                 if (lparam.0 & 0xFFFF) as u32 == HTCLIENT
                     && wparam.0 as isize == hwnd.0 as isize =>
             {
-                let (x, y) = dialog::cursor(hwnd);
+                let (x, y) = window::cursor(hwnd);
                 let cursor = if self.hit(x, y).is_some() {
                     IDC_HAND
                 } else {
                     IDC_ARROW
                 };
-                // SAFETY: システムカーソルの設定
-                unsafe {
-                    let _ = SetCursor(LoadCursorW(None, cursor).ok());
-                }
+                window::set_cursor(cursor);
                 return Some(LRESULT(1));
             }
             WM_MOUSEMOVE => {
-                let (x, y) = dialog::point(hwnd, lparam);
+                let (x, y) = window::point(hwnd, lparam);
                 if !self.tracking_leave {
-                    let mut tme = TRACKMOUSEEVENT {
-                        cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
-                        dwFlags: TME_LEAVE,
-                        hwndTrack: hwnd,
-                        dwHoverTime: 0,
-                    };
-                    // SAFETY: 自分のウィンドウのマウス追跡
-                    self.tracking_leave = unsafe { TrackMouseEvent(&mut tme) }.is_ok();
+                    self.tracking_leave = window::track_leave(hwnd);
                 }
                 let hit = self.hit(x, y);
                 if hit != self.hover {
@@ -626,7 +566,7 @@ impl Dialog for EditDialog {
                 self.invalidate();
             }
             WM_LBUTTONDOWN => {
-                let (x, y) = dialog::point(hwnd, lparam);
+                let (x, y) = window::point(hwnd, lparam);
                 self.pressed = self.hit(x, y);
                 if self.pressed.is_some() {
                     // SAFETY: マウスキャプチャ
@@ -635,7 +575,7 @@ impl Dialog for EditDialog {
                 self.invalidate();
             }
             WM_LBUTTONUP => {
-                let (x, y) = dialog::point(hwnd, lparam);
+                let (x, y) = window::point(hwnd, lparam);
                 // キャプチャの解放は WM_CAPTURECHANGED を同期で送るので、先に押下状態を取り出す
                 let pressed = self.pressed.take();
                 // SAFETY: キャプチャ解放

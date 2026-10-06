@@ -17,7 +17,6 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::Storage::FileSystem::{
     GetFileAttributesW, INVALID_FILE_ATTRIBUTES, SearchPathW,
 };
-use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW,
 };
@@ -54,7 +53,7 @@ pub fn load(path: &str, size: i32) -> Option<Pixels> {
 
 /// アイコン取得の対象となるシェル解析可能な名前へ解決する。
 fn resolve(path: &str) -> Option<String> {
-    let expanded = expand_env(path.trim());
+    let expanded = crate::platform::wide::expand_env(path.trim());
     if expanded.is_empty() {
         return None;
     }
@@ -105,20 +104,6 @@ fn assoc_executable(scheme: &str) -> Option<String> {
     }
     let s = String::from_utf16_lossy(&buf[..len.saturating_sub(1) as usize]);
     exists(&s).then_some(s)
-}
-
-fn expand_env(path: &str) -> String {
-    if !path.contains('%') {
-        return path.to_owned();
-    }
-    let src = to_wide(path);
-    let mut buf = vec![0u16; 32768];
-    // SAFETY: バッファ長はスライスで渡す
-    let n = unsafe { ExpandEnvironmentStringsW(PCWSTR(src.as_ptr()), Some(&mut buf)) } as usize;
-    if n == 0 || n > buf.len() {
-        return path.to_owned();
-    }
-    String::from_utf16_lossy(&buf[..n - 1])
 }
 
 fn exists(path: &str) -> bool {

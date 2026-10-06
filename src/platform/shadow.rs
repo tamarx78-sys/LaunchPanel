@@ -41,32 +41,30 @@ struct ShadowState {
     rendered: (i32, i32, u32, i32),
 }
 
-/// `hwnd` の影を表示する (enabled != 0) か外す。`opacity` は濃さ (0～100%)。成功で 1。
-///
-/// # Safety
-/// `hwnd` は呼び出しスレッドが所有する有効なウィンドウであること。
-pub unsafe extern "system" fn lp_set_window_shadow(hwnd: isize, enabled: i32, opacity: i32) -> i32 {
+/// `target` (呼び出しスレッドのウィンドウ) の影を表示するか外す。`opacity` は濃さ (0～100%)。
+/// 影を付けられなかったら false。
+pub fn set_window_shadow(target: HWND, enabled: bool, opacity: i32) -> bool {
     let opacity = opacity.clamp(0, 100);
-    let target = HWND(hwnd as *mut _);
-    // SAFETY: 呼び出し側の保証どおり。状態はサブクラスの参照データとして所有し、解除時に破棄する
+    // SAFETY: 状態はサブクラスの参照データとして所有し、解除時に破棄する。表に載るのは
+    // このスレッドで付けた影だけなので、取り出したポインタは有効
     unsafe {
-        // GetWindowSubclass は comctl32 v5 (マニフェスト無しで読まれる版) に名前で公開されておらず、
-        // 参照すると DLL 自体が読み込めなくなるので、状態は自前の表で管理する
+        // GetWindowSubclass は comctl32 v5 に名前で公開されておらず、参照すると環境によって
+        // 読み込みに失敗するので、状態は自前の表で管理する
         let existing = ATTACHED.with(|m| m.borrow().get(&(target.0 as isize)).copied());
-        if enabled == 0 {
+        if !enabled {
             if let Some(state) = existing {
                 detach(target, state);
             }
-            return 1;
+            return true;
         }
         if let Some(state) = existing {
             (*state).opacity = opacity;
             update(target, &mut *state);
-            return 1;
+            return true;
         }
 
         let Some(shadow) = create_shadow_window() else {
-            return 0;
+            return false;
         };
         let state = Box::into_raw(Box::new(ShadowState {
             shadow,
@@ -76,16 +74,16 @@ pub unsafe extern "system" fn lp_set_window_shadow(hwnd: isize, enabled: i32, op
         if !SetWindowSubclass(target, Some(subclass_proc), SUBCLASS_ID, state as usize).as_bool() {
             let _ = DestroyWindow(shadow);
             drop(Box::from_raw(state));
-            return 0;
+            return false;
         }
         ATTACHED.with(|m| m.borrow_mut().insert(target.0 as isize, state));
         update(target, &mut *state);
     }
-    1
+    true
 }
 
 unsafe fn detach(target: HWND, state: *mut ShadowState) {
-    // SAFETY: state は lp_set_window_shadow で確保したもの
+    // SAFETY: state は set_window_shadow で確保したもの
     unsafe {
         ATTACHED.with(|m| m.borrow_mut().remove(&(target.0 as isize)));
         let _ = RemoveWindowSubclass(target, Some(subclass_proc), SUBCLASS_ID);
@@ -132,7 +130,7 @@ unsafe extern "system" fn subclass_proc(
     _id: usize,
     data: usize,
 ) -> LRESULT {
-    // SAFETY: data は lp_set_window_shadow で確保した ShadowState
+    // SAFETY: data は set_window_shadow で確保した ShadowState
     unsafe {
         let result = DefSubclassProc(hwnd, msg, wparam, lparam);
         match msg {

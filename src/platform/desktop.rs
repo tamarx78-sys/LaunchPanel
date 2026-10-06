@@ -18,9 +18,7 @@
 //! 付け直す (新しいフックを付けてから古いフックを外すので、途切れない)。
 
 use std::cell::RefCell;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc;
+use std::sync::{Mutex, OnceLock, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -37,7 +35,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
-type ClickCallback = extern "system" fn(x: i32, y: i32);
+use crate::platform::window::class_name;
+
+/// ダブルクリックの通知先 (判定スレッドから物理スクリーン座標で呼ばれる)。
+type ClickCallback = fn(x: i32, y: i32);
 
 /// フックを付け直す間隔
 const REHOOK_INTERVAL_MS: u32 = 2 * 60 * 1000;
@@ -46,7 +47,7 @@ const WM_REHOOK: u32 = WM_APP + 1;
 /// 判定が遅れてこれより古くなったダブルクリックは捨てる (時間が経ってから突然出ないように)
 const MAX_CANDIDATE_AGE: Duration = Duration::from_millis(1000);
 
-static CALLBACK: AtomicUsize = AtomicUsize::new(0);
+static CALLBACK: OnceLock<ClickCallback> = OnceLock::new();
 static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
 
 struct Running {
@@ -78,12 +79,12 @@ thread_local! {
     static STATE: RefCell<ClickState> = RefCell::new(ClickState::default());
 }
 
-/// 監視を開始する。成功で 1、既に動作中なら 1、フック設定に失敗したら 0。
-pub extern "system" fn lp_desktop_start(callback: ClickCallback) -> i32 {
+/// 監視を開始する。開始できた (既に動作中を含む) なら true、フックを付けられなければ false。
+pub fn start(callback: ClickCallback) -> bool {
     let mut running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
-    CALLBACK.store(callback as usize, Ordering::SeqCst);
+    let _ = CALLBACK.set(callback);
     if running.is_some() {
-        return 1;
+        return true;
     }
 
     let (tx, rx) = mpsc::channel::<Candidate>();
@@ -128,18 +129,18 @@ pub extern "system" fn lp_desktop_start(callback: ClickCallback) -> i32 {
                 hook_thread,
                 worker,
             });
-            1
+            true
         }
         _ => {
             let _ = hook_thread.join();
             let _ = worker.join(); // 送信側はフックスレッドと共に破棄済み
-            0
+            false
         }
     }
 }
 
 /// フックを付け直す (スリープ復帰時など)。監視していなければ何もしない。
-pub extern "system" fn lp_desktop_rehook() {
+pub fn rehook() {
     if let Some(running) = RUNNING.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         // SAFETY: 自分で作ったスレッドへの要求
         unsafe {
@@ -149,7 +150,7 @@ pub extern "system" fn lp_desktop_rehook() {
 }
 
 /// 監視を停止する。
-pub extern "system" fn lp_desktop_stop() {
+pub fn stop() {
     let Some(running) = RUNNING.lock().unwrap_or_else(|e| e.into_inner()).take() else {
         return;
     };
@@ -162,10 +163,7 @@ pub extern "system" fn lp_desktop_stop() {
 }
 
 fn notify(pt: POINT) {
-    let cb = CALLBACK.load(Ordering::SeqCst);
-    if cb != 0 {
-        // SAFETY: lp_desktop_start で受け取った有効な関数ポインタ
-        let cb: ClickCallback = unsafe { std::mem::transmute(cb) };
+    if let Some(cb) = CALLBACK.get() {
         cb(pt.x, pt.y);
     }
 }
@@ -405,13 +403,6 @@ fn item_rects(listview: HWND) -> Option<Vec<RECT>> {
         }
         Some(rects)
     }
-}
-
-fn class_name(hwnd: HWND) -> String {
-    let mut buf = [0u16; 64];
-    // SAFETY: バッファ長はスライスで渡す
-    let n = unsafe { GetClassNameW(hwnd, &mut buf) } as usize;
-    String::from_utf16_lossy(&buf[..n])
 }
 
 #[cfg(test)]

@@ -13,16 +13,11 @@ use std::cell::RefCell;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap;
 use windows::Win32::Graphics::Gdi::{ClientToScreen, InvalidateRect, ValidateRect};
-use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
-    VK_ESCAPE, VK_RETURN, VK_SHIFT,
+    GetKeyState, ReleaseCapture, SetCapture, VK_ESCAPE, VK_RETURN, VK_SHIFT,
 };
-use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
-use windows::Win32::UI::Shell::{
-    DragFinish, DragQueryFileW, FileOpenDialog, HDROP, IFileOpenDialog, SIGDN_FILESYSPATH,
-};
+use windows::Win32::UI::Shell::HDROP;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
@@ -34,7 +29,8 @@ use crate::config::{
 use crate::dialog::{self, Dialog};
 use crate::platform::icon::Pixels;
 use crate::platform::shadow;
-use crate::render::{Color, Gfx, Rect, TextStyle};
+use crate::platform::window;
+use crate::render::{CachedBitmap, Color, Gfx, Rect, TextStyle};
 use crate::ui::{self, State};
 
 /// 設定画面が閉じた (wParam: OK なら 1)。結果は [`take_result`] で受け取る。
@@ -126,6 +122,13 @@ enum T {
     PickPanel,
 }
 
+impl T {
+    /// 0～100% のスライダー
+    fn is_slider(self) -> bool {
+        matches!(self, T::ShadowOpacity | T::Transparency | T::Blur | T::Tint)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum ColorTarget {
     /// ボタンの背景色 (色番号)
@@ -162,7 +165,7 @@ struct SettingsDialog {
     draft: Settings,
     gfx: Option<Gfx>,
     icon: Option<Pixels>,
-    icon_bitmap: Option<(u64, ID2D1Bitmap)>,
+    icon_bitmap: CachedBitmap,
     thumbnail: Option<(u64, String, Option<ID2D1Bitmap>)>,
     background_message: Option<(String, bool)>,
     hotkey_message: Option<String>,
@@ -180,7 +183,7 @@ struct SettingsDialog {
 impl SettingsDialog {
     fn new(hwnd: HWND, owner: HWND, current: Settings, icon: Option<Pixels>) -> Self {
         let gfx = Gfx::new().ok();
-        let s = dialog::scale(hwnd);
+        let s = window::scale(hwnd);
         let mut rc = windows::Win32::Foundation::RECT::default();
         // SAFETY: 自分のウィンドウのクライアント領域の取得
         unsafe {
@@ -580,14 +583,7 @@ impl SettingsDialog {
 
     /// 編集中の背景を本体へ試し表示する。
     fn preview_look(&self) {
-        let d = &self.draft;
-        let look = Look {
-            image: d.background_image.clone(),
-            backdrop: d.backdrop,
-            blur: d.blur,
-            tint: d.tint,
-        };
-        PREVIEW.with(|p| *p.borrow_mut() = Some(look));
+        PREVIEW.with(|p| *p.borrow_mut() = Some(Look::of(&self.draft)));
         // SAFETY: 本体への通知
         unsafe {
             let _ = PostMessageW(Some(self.owner), WM_APP_PREVIEW, WPARAM(0), LPARAM(0));
@@ -596,38 +592,56 @@ impl SettingsDialog {
 
     fn preview_shadow(&self) {
         let w = &self.draft.window;
-        // SAFETY: 本体ウィンドウへの影の設定 (同じ UI スレッド)
-        unsafe {
-            shadow::lp_set_window_shadow(self.owner.0 as isize, w.shadow as i32, w.shadow_opacity)
-        };
+        // 本体ウィンドウは同じ UI スレッドのもの
+        shadow::set_window_shadow(self.owner, w.shadow, w.shadow_opacity);
     }
 
-    fn set_slider(&mut self, t: T, x: f32) {
-        let Some(r) = self
-            .layout()
+    /// 操作部品の位置 (スクロールを反映したクライアント座標)。
+    fn control_rect(&self, t: T) -> Option<Rect> {
+        self.layout()
             .controls
             .iter()
             .find(|(c, _)| *c == t)
             .map(|(_, r)| self.view(*r))
-        else {
-            return;
-        };
-        let value = (ui::slider_frac(r, x) * 100.0).round() as i32;
+    }
+
+    /// スライダーの値 (0～100)。
+    fn percent(&self, t: T) -> i32 {
+        let d = &self.draft;
+        match t {
+            T::ShadowOpacity => d.window.shadow_opacity,
+            T::Transparency => d.item_button.transparency,
+            T::Blur => d.blur,
+            T::Tint => d.tint,
+            _ => 0,
+        }
+    }
+
+    /// スライダーの値を変え、影・背景なら本体へ試し表示する。
+    fn set_percent(&mut self, t: T, value: i32) {
+        let value = value.clamp(0, 100);
+        let d = &mut self.draft;
         match t {
             T::ShadowOpacity => {
-                self.draft.window.shadow_opacity = value;
+                d.window.shadow_opacity = value;
                 self.preview_shadow();
             }
+            T::Transparency => d.item_button.transparency = value,
             T::Blur => {
-                self.draft.blur = value;
+                d.blur = value;
                 self.preview_look();
             }
             T::Tint => {
-                self.draft.tint = value;
+                d.tint = value;
                 self.preview_look();
             }
-            T::Transparency => self.draft.item_button.transparency = value,
             _ => {}
+        }
+    }
+
+    fn set_slider(&mut self, t: T, x: f32) {
+        if let Some(r) = self.control_rect(t) {
+            self.set_percent(t, (ui::slider_frac(r, x) * 100.0).round() as i32);
         }
     }
 
@@ -644,7 +658,7 @@ impl SettingsDialog {
         let name = std::path::Path::new(path)
             .file_name()
             .map_or(path.into(), |n| n.to_string_lossy().into_owned());
-        let size = self.gfx.as_ref().and_then(|g| g.image_size(path));
+        let size = crate::backdrop::image_size(path);
         self.background_message = match size {
             Some((w, h)) if w >= MAX_IMAGE || h >= MAX_IMAGE => Some((
                 format!(
@@ -663,51 +677,22 @@ impl SettingsDialog {
     }
 
     fn browse_background(&mut self) {
-        // SAFETY: COM のファイル選択ダイアログ。文字列は呼び出し中有効
-        let chosen = unsafe {
-            let Ok(dlg) =
-                CoCreateInstance::<_, IFileOpenDialog>(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
-            else {
-                return;
-            };
-            let filters = [
-                COMDLG_FILTERSPEC {
-                    pszName: w!("画像ファイル"),
-                    pszSpec: w!("*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.tif;*.tiff"),
-                },
-                COMDLG_FILTERSPEC {
-                    pszName: w!("すべてのファイル"),
-                    pszSpec: w!("*.*"),
-                },
-            ];
-            let _ = dlg.SetFileTypes(&filters);
-            let _ = dlg.SetTitle(w!("背景画像の選択"));
-            if dlg.Show(Some(self.hwnd)).is_err() {
-                return; // キャンセル
-            }
-            let Ok(item) = dlg.GetResult() else { return };
-            let Ok(p) = item.GetDisplayName(SIGDN_FILESYSPATH) else {
-                return;
-            };
-            let s = p.to_string().unwrap_or_default();
-            CoTaskMemFree(Some(p.0 as *const _));
-            s
-        };
-        self.set_background(&chosen);
+        let filters = [
+            (
+                "画像ファイル",
+                "*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.tif;*.tiff",
+            ),
+            ("すべてのファイル", "*.*"),
+        ];
+        if let Some(path) = window::pick_file(self.hwnd, "背景画像の選択", &filters, false) {
+            self.set_background(&path);
+        }
     }
 
     fn on_drop(&mut self, hdrop: HDROP) {
-        // SAFETY: WM_DROPFILES の HDROP を読んで解放する
-        let first = unsafe {
-            let len = DragQueryFileW(hdrop, 0, None) as usize;
-            let mut buf = vec![0u16; len + 1];
-            let n = DragQueryFileW(hdrop, 0, Some(&mut buf)) as usize;
-            DragFinish(hdrop);
-            (n > 0).then(|| String::from_utf16_lossy(&buf[..n]))
-        };
         // 設定画面へのドロップは背景画像の指定だけに使う (本体のアイテム登録とは別ウィンドウ)
-        if let Some(path) = first {
-            self.set_background(&path);
+        if let Some(path) = window::dropped_files(hdrop).first() {
+            self.set_background(path);
         }
     }
 
@@ -728,7 +713,7 @@ impl SettingsDialog {
     }
 
     fn choose_key(&mut self, anchor: Rect) {
-        let s = dialog::scale(self.hwnd);
+        let s = window::scale(self.hwnd);
         let mut pt = POINT {
             x: (anchor.x * s) as i32,
             y: ((anchor.y + anchor.h) * s) as i32,
@@ -766,14 +751,17 @@ impl SettingsDialog {
         }
     }
 
-    fn open_picker(&mut self, target: ColorTarget, anchor: Rect) {
-        let c = match target {
+    fn target_color(&self, target: ColorTarget) -> Rgb {
+        match target {
             ColorTarget::Button(i) => self.draft.item_button.color(i),
             ColorTarget::Text => self.draft.item_button.text_color,
-        };
+        }
+    }
+
+    fn open_picker(&mut self, target: ColorTarget, anchor: Rect) {
         self.picker = Some(Picker {
             target,
-            hsv: color::to_hsv(c),
+            hsv: color::to_hsv(self.target_color(target)),
             anchor,
             sv: None,
             hue: None,
@@ -818,6 +806,15 @@ impl SettingsDialog {
 
     // ───────────── 入力 ─────────────
 
+    /// スライダーか色の平面・色相の帯をドラッグした位置の値にする。
+    fn drag_to(&mut self, t: T, x: f32, y: f32) {
+        if t.is_slider() {
+            self.set_slider(t, x);
+        } else {
+            self.drag_picker(t, x, y);
+        }
+    }
+
     fn on_down(&mut self, x: f32, y: f32) {
         let Some(t) = self.hit(x, y) else {
             if self.picker.is_some() {
@@ -839,21 +836,13 @@ impl SettingsDialog {
                     start_value: self.column_width(),
                 })
             }
-            T::ShadowOpacity | T::Transparency | T::Blur | T::Tint => {
+            _ if t.is_slider() || matches!(t, T::PickSv | T::PickHue) => {
                 self.drag = Some(Drag {
                     target: t,
                     start_x: x,
                     start_value: 0,
                 });
-                self.set_slider(t, x);
-            }
-            T::PickSv | T::PickHue => {
-                self.drag = Some(Drag {
-                    target: t,
-                    start_x: x,
-                    start_value: 0,
-                });
-                self.drag_picker(t, x, y);
+                self.drag_to(t, x, y);
             }
             _ => self.pressed = Some(t),
         }
@@ -876,22 +865,13 @@ impl SettingsDialog {
                     };
                     self.set_column_width(value);
                 }
-                T::ShadowOpacity | T::Transparency | T::Blur | T::Tint => self.set_slider(t, x),
-                T::PickSv | T::PickHue => self.drag_picker(t, x, y),
-                _ => {}
+                _ => self.drag_to(t, x, y),
             }
             self.invalidate();
             return;
         }
         if !self.tracking_leave {
-            let mut tme = TRACKMOUSEEVENT {
-                cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
-                dwFlags: TME_LEAVE,
-                hwndTrack: self.hwnd,
-                dwHoverTime: 0,
-            };
-            // SAFETY: 自分のウィンドウのマウス追跡
-            self.tracking_leave = unsafe { TrackMouseEvent(&mut tme) }.is_ok();
+            self.tracking_leave = window::track_leave(self.hwnd);
         }
         let hit = self.hit(x, y);
         if hit != self.hover {
@@ -917,12 +897,7 @@ impl SettingsDialog {
             self.invalidate();
             return;
         }
-        let anchor = self
-            .layout()
-            .controls
-            .iter()
-            .find(|(c, _)| *c == t)
-            .map(|(_, r)| self.view(*r));
+        let anchor = self.control_rect(t);
         match t {
             T::Shadow => {
                 self.draft.window.shadow = !self.draft.window.shadow;
@@ -971,30 +946,8 @@ impl SettingsDialog {
                 let v = self.column_width() + (notches.signum() as i32) * 10;
                 self.set_column_width(v / 10 * 10);
             }
-            Some(t @ (T::ShadowOpacity | T::Transparency | T::Blur | T::Tint))
-                if self.enabled(t) =>
-            {
-                let step = notches.signum() as i32;
-                match t {
-                    T::Blur | T::Tint => {
-                        let v = if t == T::Blur {
-                            &mut self.draft.blur
-                        } else {
-                            &mut self.draft.tint
-                        };
-                        *v = (*v + step).clamp(0, 100);
-                        self.preview_look();
-                    }
-                    T::ShadowOpacity => {
-                        let o = &mut self.draft.window.shadow_opacity;
-                        *o = (*o + step).clamp(0, 100);
-                        self.preview_shadow();
-                    }
-                    _ => {
-                        let v = &mut self.draft.item_button.transparency;
-                        *v = (*v + step).clamp(0, 100);
-                    }
-                }
+            Some(t) if t.is_slider() && self.enabled(t) => {
+                self.set_percent(t, self.percent(t) + notches.signum() as i32);
             }
             _ if self.picker.is_none() => {
                 let layout = self.layout();
@@ -1097,10 +1050,7 @@ impl SettingsDialog {
             T::Shadow => ui::switch(gfx, r, d.window.shadow, st),
             T::Bold => ui::switch(gfx, r, d.item_button.bold_text, st),
             T::Desktop => ui::switch(gfx, r, d.desktop_double_click, st),
-            T::ShadowOpacity => ui::slider(gfx, r, d.window.shadow_opacity as f32 / 100.0, st),
-            T::Transparency => ui::slider(gfx, r, d.item_button.transparency as f32 / 100.0, st),
-            T::Blur => ui::slider(gfx, r, d.blur as f32 / 100.0, st),
-            T::Tint => ui::slider(gfx, r, d.tint as f32 / 100.0, st),
+            _ if t.is_slider() => ui::slider(gfx, r, self.percent(t) as f32 / 100.0, st),
             T::BackdropKind(i) => {
                 let on = d.backdrop == [Backdrop::None, Backdrop::Wallpaper, Backdrop::Acrylic][i];
                 ui::toggle(gfx, r, ["なし", "壁紙ぼかし", "アクリル"][i], on, st);
@@ -1187,8 +1137,8 @@ impl SettingsDialog {
             (r.w - 32.0).min(280.0),
             36.0,
         );
-        let hovered = self.hover == Some(T::Preview)
-            && button.contains_point(crate::dialog::cursor(self.hwnd));
+        let hovered =
+            self.hover == Some(T::Preview) && button.contains_point(window::cursor(self.hwnd));
         // ボタンの色を選んでいる間は、その色で見せる
         let color = match self.picker.as_ref().map(|p| p.target) {
             Some(ColorTarget::Button(i)) => i,
@@ -1261,10 +1211,7 @@ impl SettingsDialog {
                 _ => {}
             }
         }
-        let c = match p.target {
-            ColorTarget::Button(i) => self.draft.item_button.color(i),
-            ColorTarget::Text => self.draft.item_button.text_color,
-        };
+        let c = self.target_color(p.target);
         let close = rects.last().unwrap().1;
         gfx.fill_round(
             Rect::new(panel.x + 12.0, close.y + 4.0, 24.0, 24.0),
@@ -1283,17 +1230,7 @@ impl SettingsDialog {
     fn refresh_bitmaps(&mut self) {
         let Some(gfx) = &self.gfx else { return };
         let generation = gfx.generation;
-        if self
-            .icon_bitmap
-            .as_ref()
-            .is_none_or(|(g, _)| *g != generation)
-        {
-            self.icon_bitmap = self
-                .icon
-                .as_ref()
-                .and_then(|p| gfx.create_bitmap(p))
-                .map(|b| (generation, b));
-        }
+        gfx.refresh_bitmap(&mut self.icon_bitmap, self.icon.as_ref());
         let path = &self.draft.background_image;
         if self
             .thumbnail
@@ -1346,39 +1283,24 @@ impl Dialog for SettingsDialog {
             }
             WM_ERASEBKGND => return Some(LRESULT(1)),
             WM_SIZE => {
-                let (w, h) = (
-                    (lparam.0 & 0xFFFF) as u32,
-                    ((lparam.0 >> 16) & 0xFFFF) as u32,
-                );
+                let (w, h) = window::client_size(lparam);
                 if let Some(g) = &self.gfx {
                     g.resize(w, h);
                 }
-                let s = dialog::scale(hwnd);
+                let s = window::scale(hwnd);
                 self.width = w as f32 / s;
                 self.height = h as f32 / s;
                 self.invalidate();
             }
             WM_DPICHANGED => {
-                // SAFETY: lParam は推奨矩形
-                let r = unsafe { &*(lparam.0 as *const windows::Win32::Foundation::RECT) };
                 if let Some(g) = &self.gfx {
                     g.set_dpi((wparam.0 & 0xFFFF) as u32);
                 }
-                // SAFETY: 自分のウィンドウの移動
-                unsafe {
-                    let _ = SetWindowPos(
-                        hwnd,
-                        None,
-                        r.left,
-                        r.top,
-                        r.right - r.left,
-                        r.bottom - r.top,
-                        SWP_NOZORDER | SWP_NOACTIVATE,
-                    );
-                }
+                // SAFETY: WM_DPICHANGED の lParam
+                unsafe { window::apply_suggested_rect(hwnd, lparam) };
             }
             WM_SETCURSOR if (lparam.0 & 0xFFFF) as u32 == HTCLIENT => {
-                let (x, y) = dialog::cursor(hwnd);
+                let (x, y) = window::cursor(hwnd);
                 let target = self
                     .drag
                     .as_ref()
@@ -1390,14 +1312,11 @@ impl Dialog for SettingsDialog {
                     Some(t) if self.enabled(t) => IDC_HAND,
                     _ => IDC_ARROW,
                 };
-                // SAFETY: システムカーソルの設定
-                unsafe {
-                    let _ = SetCursor(LoadCursorW(None, cursor).ok());
-                }
+                window::set_cursor(cursor);
                 return Some(LRESULT(1));
             }
             WM_MOUSEMOVE => {
-                let (x, y) = dialog::point(hwnd, lparam);
+                let (x, y) = window::point(hwnd, lparam);
                 self.on_move(x, y);
             }
             WM_MOUSELEAVE => {
@@ -1406,11 +1325,11 @@ impl Dialog for SettingsDialog {
                 self.invalidate();
             }
             WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
-                let (x, y) = dialog::point(hwnd, lparam);
+                let (x, y) = window::point(hwnd, lparam);
                 self.on_down(x, y);
             }
             WM_LBUTTONUP => {
-                let (x, y) = dialog::point(hwnd, lparam);
+                let (x, y) = window::point(hwnd, lparam);
                 self.on_up(x, y);
             }
             WM_CAPTURECHANGED => {
@@ -1419,7 +1338,7 @@ impl Dialog for SettingsDialog {
                 self.invalidate();
             }
             WM_MOUSEWHEEL => {
-                let (x, y) = dialog::cursor(hwnd);
+                let (x, y) = window::cursor(hwnd);
                 self.on_wheel(((wparam.0 >> 16) & 0xFFFF) as i16, x, y);
             }
             WM_DROPFILES => self.on_drop(HDROP(wparam.0 as *mut _)),

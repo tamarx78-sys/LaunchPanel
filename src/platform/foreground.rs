@@ -15,20 +15,20 @@ use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, GetForegroundWindow, SetForegroundWindow,
 };
 
-/// `hwnd` を前面化して入力フォーカスを与える。前面になれば 1。
-///
-/// # Safety
-/// `hwnd` は呼び出しスレッドが所有する有効なウィンドウであること。
-pub unsafe extern "system" fn lp_force_foreground(hwnd: isize) -> i32 {
-    let hwnd = HWND(hwnd as *mut _);
-    if simulate_failure() {
-        return 0;
-    }
-    // SAFETY: 呼び出し側の保証どおり
+/// `hwnd` (呼び出しスレッドのウィンドウ) を前面化して入力フォーカスを与える。
+/// 前面になれば (既に前面なら) true。
+pub fn force_foreground(hwnd: HWND) -> bool {
+    // SAFETY: 前面ウィンドウの参照と前面化のみ
     unsafe {
+        if GetForegroundWindow() == hwnd {
+            return true;
+        }
+        if simulate_failure() {
+            return false;
+        }
         if try_set(hwnd) {
             crate::log::debug("前面化: 通常");
-            return 1;
+            return true;
         }
         // 移動量 0 のマウス入力を送り、前面化の権利を得る
         let input = INPUT {
@@ -46,7 +46,7 @@ pub unsafe extern "system" fn lp_force_foreground(hwnd: isize) -> i32 {
         } else {
             "前面化: 失敗"
         });
-        ok as i32
+        ok
     }
 }
 
@@ -63,6 +63,6 @@ pub fn simulate_failure() -> bool {
 }
 
 unsafe fn try_set(hwnd: HWND) -> bool {
-    // SAFETY: 呼び出し側の保証どおり
+    // SAFETY: 前面化と前面ウィンドウの参照のみ
     unsafe { SetForegroundWindow(hwnd).as_bool() && GetForegroundWindow() == hwnd }
 }

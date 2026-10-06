@@ -6,7 +6,7 @@
 
 use std::ffi::c_void;
 
-use windows::Win32::Foundation::{D2DERR_RECREATE_TARGET, GENERIC_READ, HWND, RECT};
+use windows::Win32::Foundation::{D2DERR_RECREATE_TARGET, HWND, RECT};
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
@@ -19,7 +19,6 @@ use windows::core::{PCWSTR, Result, w};
 use windows_numerics::Matrix3x2;
 
 use crate::platform::icon::Pixels;
-use crate::platform::wide::to_wide;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
@@ -106,6 +105,9 @@ pub enum TextStyle {
     /// 補足説明 (左寄せ・上揃え・折り返し)
     Caption,
 }
+
+/// 作った時のレンダーターゲットの世代付きのビットマップ ([`Gfx::refresh_bitmap`] で更新する)。
+pub type CachedBitmap = Option<(u64, ID2D1Bitmap)>;
 
 pub struct Gfx {
     d2d: ID2D1Factory,
@@ -216,27 +218,6 @@ impl Gfx {
                 return (0.0, 0.0);
             }
             (m.widthIncludingTrailingWhitespace, m.height)
-        }
-    }
-
-    /// 画像ファイルの寸法 (ピクセル)。読めなければ None。
-    pub fn image_size(&self, path: &str) -> Option<(u32, u32)> {
-        let wide = to_wide(path);
-        // SAFETY: WIC による寸法の取得のみ
-        unsafe {
-            let decoder = self
-                .wic
-                .CreateDecoderFromFilename(
-                    PCWSTR(wide.as_ptr()),
-                    None,
-                    GENERIC_READ,
-                    WICDecodeMetadataCacheOnDemand,
-                )
-                .ok()?;
-            let frame = decoder.GetFrame(0).ok()?;
-            let (mut w, mut h) = (0, 0);
-            frame.GetSize(&mut w, &mut h).ok()?;
-            Some((w, h))
         }
     }
 
@@ -495,6 +476,16 @@ impl Gfx {
         }
     }
 
+    /// `cache` が今のレンダーターゲットの世代で作ったものでなければ、`pixels` から作り直す
+    /// (レンダーターゲットを作り直すと、古いビットマップは使えなくなる)。
+    pub fn refresh_bitmap(&self, cache: &mut CachedBitmap, pixels: Option<&Pixels>) {
+        if cache.as_ref().is_none_or(|(g, _)| *g != self.generation) {
+            *cache = pixels
+                .and_then(|p| self.create_bitmap(p))
+                .map(|b| (self.generation, b));
+        }
+    }
+
     /// BGRA (乗算済み) の画素からビットマップを作る。
     pub fn create_bitmap(&self, p: &Pixels) -> Option<ID2D1Bitmap> {
         let t = self.target.as_ref()?;
@@ -524,19 +515,9 @@ impl Gfx {
     /// 画像ファイルを読み込む。読めなければ None (背景なしとして扱う)。
     pub fn load_image(&self, path: &str) -> Option<ID2D1Bitmap> {
         let t = self.target.as_ref()?;
-        let wide = to_wide(path);
-        // SAFETY: WIC による読込とビットマップ化
+        let frame = crate::backdrop::open_frame(&self.wic, path)?;
+        // SAFETY: WIC による形式変換とビットマップ化
         unsafe {
-            let decoder = self
-                .wic
-                .CreateDecoderFromFilename(
-                    PCWSTR(wide.as_ptr()),
-                    None,
-                    GENERIC_READ,
-                    WICDecodeMetadataCacheOnDemand,
-                )
-                .ok()?;
-            let frame = decoder.GetFrame(0).ok()?;
             let converter = self.wic.CreateFormatConverter().ok()?;
             converter
                 .Initialize(

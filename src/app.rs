@@ -7,30 +7,28 @@
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows::Win32::Graphics::Direct2D::ID2D1Bitmap;
 use windows::Win32::Graphics::Dwm::{
     DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DwmSetWindowAttribute,
 };
 use windows::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateDIBSection, DIB_RGB_COLORS, DeleteObject,
-    GetMonitorInfoW, HBITMAP, HGDIOBJ, HMONITOR, InvalidateRect, MONITOR_DEFAULTTONEAREST,
-    MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint, MonitorFromRect, ValidateRect,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateDIBSection, DIB_RGB_COLORS, DeleteObject, HBITMAP,
+    HGDIOBJ, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY, MonitorFromRect,
+    ValidateRect,
 };
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
-};
-use windows::Win32::UI::Shell::{DragFinish, DragQueryFileW, HDROP};
+use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
+use windows::Win32::UI::Shell::HDROP;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
 use crate::config::{BUTTON_COLORS, Config, Item, MIN_INNER_SIZE, Rgb, Settings, Store};
 use crate::platform::icon::Pixels;
+use crate::platform::shell::{self, ShellEvent};
 use crate::platform::wide::to_wide;
-use crate::platform::{desktop, foreground, shadow, shell};
-use crate::render::{Color, Gfx, Rect, TextStyle};
+use crate::platform::{desktop, foreground, shadow, window};
+use crate::render::{CachedBitmap, Color, Gfx, Rect, TextStyle};
 use crate::services::IconLoader;
 use crate::{items, layout};
 
@@ -85,7 +83,7 @@ struct Entry {
     item: Item,
     icon: Option<Pixels>,
     icon_failed: bool,
-    bitmap: Option<(u64, ID2D1Bitmap)>,
+    bitmap: CachedBitmap,
     /// 現在の描画位置と目標位置 (コンテンツ座標)
     pos: (f32, f32),
     target: (f32, f32),
@@ -131,7 +129,7 @@ pub struct App {
     gfx: Gfx,
     icons: IconLoader,
     fallback: Option<Pixels>,
-    fallback_bitmap: Option<(u64, ID2D1Bitmap)>,
+    fallback_bitmap: CachedBitmap,
     backdrop: crate::appearance::BackdropView,
     /// 設定画面で試し表示中の背景 (無ければ保存済みの設定)
     preview_look: Option<crate::appearance::Look>,
@@ -240,8 +238,7 @@ impl App {
     }
 
     fn scale(&self) -> f32 {
-        // SAFETY: 有効なウィンドウ
-        unsafe { GetDpiForWindow(self.hwnd) }.max(96) as f32 / 96.0
+        window::scale(self.hwnd)
     }
 
     // ───────────── 起動・表示 ─────────────
@@ -267,35 +264,13 @@ impl App {
         let h = &self.settings.hotkey;
         let modifiers =
             (h.ctrl as u32 * 2) | (h.alt as u32) | (h.shift as u32 * 4) | (h.win as u32 * 8);
-        let (tip, show, settings, exit) = (
-            to_wide("LaunchPanel"),
-            to_wide("表示"),
-            to_wide("設定"),
-            to_wide("終了"),
-        );
-        let icon = to_wide("");
-        // SAFETY: 文字列は呼び出し中有効。コールバックはプロセス終了まで有効
-        let status = unsafe {
-            shell::lp_shell_start(
-                on_shell_event,
-                tip.as_ptr(),
-                show.as_ptr(),
-                settings.as_ptr(),
-                exit.as_ptr(),
-                icon.as_ptr(),
-                modifiers,
-                h.key as u32,
-            )
-        };
-        if status & 2 == 0 {
+        if !shell::start(on_shell_event, modifiers, h.key) {
             crate::log::write(&format!(
                 "ホットキーの登録に失敗しました: {modifiers:#x}+{} (他のアプリが使用中の可能性があります)",
                 h.key
             ));
         }
-        if self.settings.desktop_double_click
-            && desktop::lp_desktop_start(on_desktop_double_click) == 0
-        {
+        if self.settings.desktop_double_click && !desktop::start(on_desktop_double_click) {
             crate::log::write("デスクトップのダブルクリック監視を開始できませんでした。");
         }
         self.show("起動");
@@ -306,7 +281,7 @@ impl App {
         let scale = self.scale() as f64;
         let w = (self.settings.window.effective_inner_width() * scale).round() as i32;
         let h = (self.settings.window.effective_inner_height() * scale).round() as i32;
-        let area = work_area(POINT::default(), MONITOR_DEFAULTTOPRIMARY);
+        let area = window::work_area_at(POINT::default(), MONITOR_DEFAULTTOPRIMARY);
         let x = area.left + ((area.right - area.left - w) / 2).max(0);
         let y = area.top + ((area.bottom - area.top - h) / 2).max(0);
         // SAFETY: 自分のウィンドウの移動
@@ -315,10 +290,7 @@ impl App {
 
     fn apply_shadow(&self) {
         let w = &self.settings.window;
-        // SAFETY: 自分のウィンドウへの影の設定
-        unsafe {
-            shadow::lp_set_window_shadow(self.hwnd.0 as isize, w.shadow as i32, w.shadow_opacity)
-        };
+        shadow::set_window_shadow(self.hwnd, w.shadow, w.shadow_opacity);
     }
 
     /// 従来の位置で復帰し、前面化して入力フォーカスを得る。`reason` は診断ログ用の呼び出し元。
@@ -336,9 +308,7 @@ impl App {
                 SW_SHOW
             };
             let _ = ShowWindow(self.hwnd, cmd);
-            let ok = foreground::lp_force_foreground(self.hwnd.0 as isize) != 0
-                || GetForegroundWindow() == self.hwnd;
-            (before, ok)
+            (before, foreground::force_foreground(self.hwnd))
         };
         crate::log::write(&format!(
             "表示 ({reason}): 前面化{} (直前の前面={})",
@@ -350,8 +320,7 @@ impl App {
         } else {
             self.foreground_failed(before);
         }
-        // SAFETY: タイマー設定
-        unsafe { SetTimer(Some(self.hwnd), TIMER_WATCH, WATCH_INTERVAL_MS, None) };
+        self.set_timer(TIMER_WATCH, WATCH_INTERVAL_MS);
         self.invalidate();
     }
 
@@ -362,26 +331,19 @@ impl App {
         self.fg_baseline = baseline.0 as isize;
         self.retries = 0;
         self.set_topmost(true);
-        // SAFETY: タイマー設定
-        unsafe { SetTimer(Some(self.hwnd), TIMER_RETRY, RETRY_INTERVAL_MS, None) };
+        self.set_timer(TIMER_RETRY, RETRY_INTERVAL_MS);
     }
 
     fn retry_foreground(&mut self) {
-        // SAFETY: ウィンドウ状態の参照
-        if self.activated || !unsafe { IsWindowVisible(self.hwnd) }.as_bool() {
+        if self.activated || !self.is_visible() {
             return;
         }
         self.retries += 1;
-        // SAFETY: 自分のウィンドウの前面化と前面ウィンドウの参照
-        if unsafe {
-            foreground::lp_force_foreground(self.hwnd.0 as isize) != 0
-                || GetForegroundWindow() == self.hwnd
-        } {
+        if foreground::force_foreground(self.hwnd) {
             crate::log::write(&format!("前面化をやり直して成功 ({} 回目)", self.retries));
             self.set_topmost(false);
         } else if self.retries < MAX_RETRIES {
-            // SAFETY: タイマー設定
-            unsafe { SetTimer(Some(self.hwnd), TIMER_RETRY, RETRY_INTERVAL_MS, None) };
+            self.set_timer(TIMER_RETRY, RETRY_INTERVAL_MS);
         } else {
             crate::log::write(&format!(
                 "前面化できないため、最前面に表示してクリックを待つ (前面={})",
@@ -414,55 +376,42 @@ impl App {
     /// ウィンドウがどのモニターの作業領域にもほとんど入っていなければ (モニターを外した、
     /// 画面構成が変わった等)、最も近いモニターの作業領域へ収める。
     fn ensure_on_screen(&mut self) {
-        let mut rc = RECT::default();
-        // SAFETY: 自分のウィンドウの矩形取得とモニター情報の取得
-        let area = unsafe {
-            if GetWindowRect(self.hwnd, &mut rc).is_err() {
-                return;
-            }
-            monitor_work_area(MonitorFromRect(&rc, MONITOR_DEFAULTTONEAREST))
-        };
+        let rc = self.window_rect();
+        // SAFETY: モニターの検索のみ
+        let area = window::work_area(unsafe { MonitorFromRect(&rc, MONITOR_DEFAULTTONEAREST) });
         let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
         let visible_w = rc.right.min(area.right) - rc.left.max(area.left);
         let visible_h = rc.bottom.min(area.bottom) - rc.top.max(area.top);
         if visible_w >= w.min(120) && visible_h >= h.min(60) {
             return;
         }
-        let x = rc.left.min(area.right - w).max(area.left);
-        let y = rc.top.min(area.bottom - h).max(area.top);
+        let (x, y) = window::clamp_into(rc.left, rc.top, w, h, area);
         crate::log::write(&format!(
             "画面外にあったため移動: ({}, {}) → ({x}, {y})",
             rc.left, rc.top
         ));
-        // SAFETY: 自分のウィンドウの移動
+        window::move_to(self.hwnd, x, y);
+    }
+
+    /// ウィンドウの矩形 (物理スクリーン座標)。
+    fn window_rect(&self) -> RECT {
+        let mut rc = RECT::default();
+        // SAFETY: 自分のウィンドウの矩形取得
         unsafe {
-            let _ = SetWindowPos(
-                self.hwnd,
-                None,
-                x,
-                y,
-                0,
-                0,
-                SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE,
-            );
+            let _ = GetWindowRect(self.hwnd, &mut rc);
         }
+        rc
     }
 
     /// 表示中の見張り。前面が他のアプリになっていれば隠す。
     /// フォーカス喪失の通知 (WM_ACTIVATE) を、メニューやダイアログの表示中・リサイズ中・
     /// 前面化の失敗などで取りこぼしても、ここで回収する。
     fn watch(&mut self) {
-        // SAFETY: ウィンドウ状態の参照
-        if self.exiting || !unsafe { IsWindowVisible(self.hwnd) }.as_bool() {
-            // SAFETY: 自分のタイマーの停止
-            unsafe {
-                let _ = KillTimer(Some(self.hwnd), TIMER_WATCH);
-            }
+        if self.exiting || !self.is_visible() {
+            self.kill_timer(TIMER_WATCH);
             return;
         }
-        if self.pinned
-            || self.modal > 0
-            || self.resize.is_some()
+        if self.keeps_shown()
             || self.press.is_some()
             || self.drag.is_some()
             || self.reclaim_focus
@@ -486,43 +435,49 @@ impl App {
     /// 非表示のまま移動してから表示するので、以前の位置は見えない。
     fn show_at(&mut self, x: i32, y: i32) {
         crate::log::debug(&format!("デスクトップのダブルクリックで復帰: ({x}, {y})"));
-        let mut rc = RECT::default();
-        // SAFETY: 自分のウィンドウの矩形取得と移動
-        unsafe {
-            let _ = GetWindowRect(self.hwnd, &mut rc);
-            let (w, h) = (rc.right - rc.left, rc.bottom - rc.top);
-            let area = work_area(POINT { x, y }, MONITOR_DEFAULTTONEAREST);
-            let x = x.min(area.right - w).max(area.left);
-            let y = y.min(area.bottom - h).max(area.top);
-            let _ = SetWindowPos(
-                self.hwnd,
-                None,
-                x,
-                y,
-                0,
-                0,
-                SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE,
-            );
-        }
+        let rc = self.window_rect();
+        let area = window::work_area_at(POINT { x, y }, MONITOR_DEFAULTTONEAREST);
+        let (x, y) = window::clamp_into(x, y, rc.right - rc.left, rc.bottom - rc.top, area);
+        window::move_to(self.hwnd, x, y);
         self.show("デスクトップのダブルクリック");
     }
 
     fn hide(&mut self, reason: &str) {
         crate::log::write(&format!("非表示 ({reason})"));
         self.set_topmost(false);
-        // SAFETY: 自分のタイマーの停止とウィンドウの非表示
+        self.kill_timer(TIMER_WATCH);
+        self.kill_timer(TIMER_RETRY);
+        // SAFETY: 自分のウィンドウの非表示
         unsafe {
-            let _ = KillTimer(Some(self.hwnd), TIMER_WATCH);
-            let _ = KillTimer(Some(self.hwnd), TIMER_RETRY);
             let _ = ShowWindow(self.hwnd, SW_HIDE);
+        }
+    }
+
+    fn is_visible(&self) -> bool {
+        // SAFETY: ウィンドウ状態の参照
+        unsafe { IsWindowVisible(self.hwnd) }.as_bool()
+    }
+
+    /// 自動非表示しない状態 (ピン留め中・ダイアログやメニューの表示中・リサイズ中・終了処理中)。
+    fn keeps_shown(&self) -> bool {
+        self.pinned || self.exiting || self.modal > 0 || self.resize.is_some()
+    }
+
+    fn set_timer(&self, id: usize, ms: u32) {
+        // SAFETY: 自分のウィンドウのタイマー設定
+        unsafe { SetTimer(Some(self.hwnd), id, ms, None) };
+    }
+
+    fn kill_timer(&self, id: usize) {
+        // SAFETY: 自分のウィンドウのタイマー停止
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), id);
         }
     }
 
     /// ピン留め中・ダイアログ表示中でなく、前面でもなければ非表示にする。
     fn auto_hide(&mut self) {
-        // SAFETY: ウィンドウ状態の参照
-        let visible = unsafe { IsWindowVisible(self.hwnd) }.as_bool();
-        if self.pinned || self.exiting || self.modal > 0 || !visible || self.resize.is_some() {
+        if self.keeps_shown() || !self.is_visible() {
             return;
         }
         let elapsed = self.shown_at.elapsed();
@@ -534,15 +489,10 @@ impl App {
                 elapsed.as_millis()
             ));
             self.reclaim_focus = true;
-            // SAFETY: タイマー設定
-            unsafe {
-                SetTimer(
-                    Some(self.hwnd),
-                    TIMER_GRACE,
-                    (RESTORE_GRACE - elapsed).as_millis() as u32 + 1,
-                    None,
-                )
-            };
+            self.set_timer(
+                TIMER_GRACE,
+                (RESTORE_GRACE - elapsed).as_millis() as u32 + 1,
+            );
             return;
         }
         if std::mem::take(&mut self.reclaim_focus) {
@@ -550,7 +500,7 @@ impl App {
             unsafe {
                 let fg = GetForegroundWindow();
                 if fg != self.hwnd {
-                    let ok = foreground::lp_force_foreground(self.hwnd.0 as isize) != 0;
+                    let ok = foreground::force_foreground(self.hwnd);
                     crate::log::write(&format!(
                         "復帰直後に前面を奪われたので取り戻す: {} (前面={})",
                         if ok { "成功" } else { "失敗" },
@@ -573,8 +523,8 @@ impl App {
 
     fn exit(&mut self) {
         self.exiting = true;
-        desktop::lp_desktop_stop();
-        shell::lp_shell_stop();
+        desktop::stop();
+        shell::stop();
         // SAFETY: 自分のウィンドウの破棄
         unsafe {
             let _ = DestroyWindow(self.hwnd);
@@ -734,14 +684,7 @@ impl App {
         }
 
         if !self.tracking_leave {
-            let mut tme = TRACKMOUSEEVENT {
-                cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
-                dwFlags: TME_LEAVE,
-                hwndTrack: self.hwnd,
-                dwHoverTime: 0,
-            };
-            // SAFETY: 自分のウィンドウのマウス追跡
-            self.tracking_leave = unsafe { TrackMouseEvent(&mut tme) }.is_ok();
+            self.tracking_leave = window::track_leave(self.hwnd);
         }
         let hit = match self.hit(x, y) {
             h @ (Hit::Item(_) | Hit::Gear | Hit::Pin) => h,
@@ -974,18 +917,7 @@ impl App {
     }
 
     fn on_drop_files(&mut self, hdrop: HDROP) {
-        let mut paths = Vec::new();
-        // SAFETY: WM_DROPFILES の HDROP を読んで解放する
-        unsafe {
-            let count = DragQueryFileW(hdrop, u32::MAX, None);
-            for i in 0..count {
-                let len = DragQueryFileW(hdrop, i, None) as usize;
-                let mut buf = vec![0u16; len + 1];
-                DragQueryFileW(hdrop, i, Some(&mut buf));
-                paths.push(String::from_utf16_lossy(&buf[..len]));
-            }
-            DragFinish(hdrop);
-        }
+        let paths = window::dropped_files(hdrop);
         let mut list: Vec<Item> = self.entries.iter().map(|e| e.item.clone()).collect();
         let before = list.len();
         if items::add_paths(&mut list, paths) == 0 {
@@ -1003,11 +935,11 @@ impl App {
 
     fn update_drag(&mut self, x: f32, y: f32) {
         let area = self.item_area();
+        let max = self.max_scroll();
         let Some(drag) = &mut self.drag else { return };
         drag.pointer = (x, y);
 
         // アイテム領域の上下端に近ければ自動スクロール
-        let max = (self.content_height - area.h).max(0.0);
         if y < area.y + AUTO_SCROLL_MARGIN {
             self.scroll_target = (self.scroll_target - 8.0).max(0.0);
         } else if y > area.y + area.h - AUTO_SCROLL_MARGIN {
@@ -1224,11 +1156,11 @@ impl App {
         self.apply_shadow();
         if old.desktop_double_click != self.settings.desktop_double_click {
             if self.settings.desktop_double_click {
-                if desktop::lp_desktop_start(on_desktop_double_click) == 0 {
+                if !desktop::start(on_desktop_double_click) {
                     crate::log::write("デスクトップのダブルクリック監視を開始できませんでした。");
                 }
             } else {
-                desktop::lp_desktop_stop();
+                desktop::stop();
             }
         }
         self.save();
@@ -1252,8 +1184,7 @@ impl App {
 
     fn show_footer(&mut self, message: &str) {
         self.footer = Some(message.to_owned());
-        // SAFETY: タイマー設定
-        unsafe { SetTimer(Some(self.hwnd), TIMER_FOOTER, 4000, None) };
+        self.set_timer(TIMER_FOOTER, 4000);
         self.invalidate();
     }
 
@@ -1429,27 +1360,11 @@ impl App {
 
     /// レンダーターゲットの世代が変わったビットマップを作り直す。
     fn refresh_bitmaps(&mut self) {
-        let generation = self.gfx.generation;
         for e in &mut self.entries {
-            if e.bitmap.as_ref().is_none_or(|(g, _)| *g != generation) {
-                e.bitmap = e
-                    .icon
-                    .as_ref()
-                    .and_then(|p| self.gfx.create_bitmap(p))
-                    .map(|b| (generation, b));
-            }
+            self.gfx.refresh_bitmap(&mut e.bitmap, e.icon.as_ref());
         }
-        if self
-            .fallback_bitmap
-            .as_ref()
-            .is_none_or(|(g, _)| *g != generation)
-        {
-            self.fallback_bitmap = self
-                .fallback
-                .as_ref()
-                .and_then(|p| self.gfx.create_bitmap(p))
-                .map(|b| (generation, b));
-        }
+        self.gfx
+            .refresh_bitmap(&mut self.fallback_bitmap, self.fallback.as_ref());
     }
 
     /// 現在の背景の描き方 (設定画面の試し表示中は編集中の値)。
@@ -1469,13 +1384,7 @@ impl App {
     // ───────────── メッセージ ─────────────
 
     pub fn handle(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
-        let point = || {
-            let s = self.scale();
-            (
-                (lparam.0 & 0xFFFF) as i16 as f32 / s,
-                ((lparam.0 >> 16) & 0xFFFF) as i16 as f32 / s,
-            )
-        };
+        let point = || window::point(self.hwnd, lparam);
         match msg {
             WM_PAINT => {
                 self.paint();
@@ -1486,10 +1395,7 @@ impl App {
             }
             WM_ERASEBKGND => return Some(LRESULT(1)),
             WM_SIZE => {
-                let (w, h) = (
-                    (lparam.0 & 0xFFFF) as u32,
-                    ((lparam.0 >> 16) & 0xFFFF) as u32,
-                );
+                let (w, h) = window::client_size(lparam);
                 self.gfx.resize(w, h);
                 let s = self.scale();
                 self.width = w as f32 / s;
@@ -1497,30 +1403,12 @@ impl App {
                 self.relayout(self.drag.is_some());
             }
             WM_DPICHANGED => {
-                // SAFETY: lParam は推奨矩形
-                let r = unsafe { &*(lparam.0 as *const RECT) };
                 self.gfx.set_dpi((wparam.0 & 0xFFFF) as u32);
-                // SAFETY: 自分のウィンドウの移動
-                unsafe {
-                    let _ = SetWindowPos(
-                        self.hwnd,
-                        None,
-                        r.left,
-                        r.top,
-                        r.right - r.left,
-                        r.bottom - r.top,
-                        SWP_NOZORDER | SWP_NOACTIVATE,
-                    );
-                }
+                // SAFETY: WM_DPICHANGED の lParam
+                unsafe { window::apply_suggested_rect(self.hwnd, lparam) };
             }
             WM_SETCURSOR if (lparam.0 & 0xFFFF) as u32 == HTCLIENT => {
-                let mut pt = POINT::default();
-                // SAFETY: カーソル位置の変換
-                unsafe {
-                    let _ = GetCursorPos(&mut pt);
-                    let _ = windows::Win32::Graphics::Gdi::ScreenToClient(self.hwnd, &mut pt);
-                }
-                let s = self.scale();
+                let (x, y) = window::cursor(self.hwnd);
                 let cursor = if self.drag.is_some() {
                     IDC_SIZEALL
                 } else {
@@ -1529,7 +1417,7 @@ impl App {
                         .as_ref()
                         .map(|r| r.dir)
                         .map(Hit::Resize)
-                        .unwrap_or(self.hit(pt.x as f32 / s, pt.y as f32 / s))
+                        .unwrap_or(self.hit(x, y))
                     {
                         Hit::Resize(d) if d == DIR_LEFT || d == DIR_RIGHT => IDC_SIZEWE,
                         Hit::Resize(d) if d == DIR_TOP || d == DIR_BOTTOM => IDC_SIZENS,
@@ -1542,10 +1430,7 @@ impl App {
                         _ => IDC_ARROW,
                     }
                 };
-                // SAFETY: システムカーソルの設定
-                unsafe {
-                    let _ = SetCursor(LoadCursorW(None, cursor).ok());
-                }
+                window::set_cursor(cursor);
                 return Some(LRESULT(1));
             }
             WM_MOUSEMOVE => {
@@ -1590,10 +1475,8 @@ impl App {
             }
             WM_TIMER if wparam.0 == TIMER_WATCH => self.watch(),
             WM_TIMER => {
-                // SAFETY: 自分のタイマーの停止 (見張り以外は 1 回限り)
-                unsafe {
-                    let _ = KillTimer(Some(self.hwnd), wparam.0);
-                }
+                // 見張り以外は 1 回限り
+                self.kill_timer(wparam.0);
                 match wparam.0 {
                     TIMER_GRACE => self.auto_hide(),
                     TIMER_RETRY => self.retry_foreground(),
@@ -1622,7 +1505,7 @@ impl App {
                 // (PBT_APMRESUMESUSPEND = 7, PBT_APMRESUMEAUTOMATIC = 0x12)
                 if matches!(wparam.0, 7 | 0x12) {
                     crate::log::write("スリープから復帰");
-                    desktop::lp_desktop_rehook();
+                    desktop::rehook();
                 }
                 return None;
             }
@@ -1648,16 +1531,16 @@ impl App {
                 return None;
             }
             crate::edit::WM_APP_EDIT => self.on_edit_closed(wparam.0 == 1),
-            WM_APP_SHELL => match wparam.0 as u32 {
-                1 => self.show("トレイ"),
-                4 => self.show("ホットキー"),
-                2 => {
+            WM_APP_SHELL => match ShellEvent::from_wparam(wparam.0) {
+                Some(ShellEvent::Show) => self.show("トレイ"),
+                Some(ShellEvent::Hotkey) => self.show("ホットキー"),
+                Some(ShellEvent::Settings) => {
                     // 設定画面は本体に所有させるので、非表示なら先に復帰する
                     self.show("トレイの設定");
                     self.open_settings();
                 }
-                3 => self.exit(),
-                _ => {}
+                Some(ShellEvent::Exit) => self.exit(),
+                None => {}
             },
             _ => return None,
         }
@@ -1735,28 +1618,7 @@ fn window_label(hwnd: HWND) -> String {
     if hwnd.is_invalid() {
         return "なし".into();
     }
-    let mut buf = [0u16; 64];
-    // SAFETY: バッファ長はスライスで渡す
-    let n = unsafe { GetClassNameW(hwnd, &mut buf) } as usize;
-    String::from_utf16_lossy(&buf[..n])
-}
-
-/// モニターの作業領域 (物理座標)。
-fn work_area(pt: POINT, flags: windows::Win32::Graphics::Gdi::MONITOR_FROM_FLAGS) -> RECT {
-    // SAFETY: モニターの検索のみ
-    monitor_work_area(unsafe { MonitorFromPoint(pt, flags) })
-}
-
-fn monitor_work_area(monitor: HMONITOR) -> RECT {
-    let mut info = MONITORINFO {
-        cbSize: size_of::<MONITORINFO>() as u32,
-        ..Default::default()
-    };
-    // SAFETY: モニター情報の取得
-    unsafe {
-        let _ = GetMonitorInfoW(monitor, &mut info);
-    }
-    info.rcWork
+    window::class_name(hwnd)
 }
 
 // ───────────── ネイティブ側からの通知 ─────────────
@@ -1782,10 +1644,10 @@ fn post(msg: u32, wparam: usize, lparam: isize) {
     }
 }
 
-extern "system" fn on_shell_event(event: u32) {
-    post(WM_APP_SHELL, event as usize, 0);
+fn on_shell_event(event: ShellEvent) {
+    post(WM_APP_SHELL, event.to_wparam(), 0);
 }
 
-extern "system" fn on_desktop_double_click(x: i32, y: i32) {
+fn on_desktop_double_click(x: i32, y: i32) {
     post(WM_APP_DESKTOP, x as usize, y as isize);
 }

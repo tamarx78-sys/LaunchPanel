@@ -4,11 +4,9 @@
 //! 開く (本体からはみ出す大きさにできる)。開いている間は本体を無効化し、閉じる時は本体を有効に
 //! 戻してから破棄するので、活性化は本体へ戻る。中身は各ダイアログが Direct2D で描く。
 
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
-use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
-};
+use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
@@ -16,6 +14,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
 
 use crate::platform::wide::to_wide;
+use crate::platform::window;
 
 /// ダイアログの中身。ウィンドウメッセージを受け取り、処理したら Some を返す。
 pub trait Dialog {
@@ -76,15 +75,7 @@ pub fn open(
         // 本体のいるモニターの作業領域に収まる大きさで、本体の中央に重ねる
         let dpi = GetDpiForWindow(owner).max(96);
         let scale = dpi as f64 / 96.0;
-        let mut info = MONITORINFO {
-            cbSize: size_of::<MONITORINFO>() as u32,
-            ..Default::default()
-        };
-        let _ = GetMonitorInfoW(
-            MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST),
-            &mut info,
-        );
-        let work = info.rcWork;
+        let work = window::work_area(MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST));
         let mut rc = RECT {
             left: 0,
             top: 0,
@@ -120,32 +111,6 @@ pub fn close(hwnd: HWND) {
         }
         let _ = DestroyWindow(hwnd);
     }
-}
-
-/// クライアント座標 (DIP) のポインター位置。
-pub fn point(hwnd: HWND, lparam: LPARAM) -> (f32, f32) {
-    let s = scale(hwnd);
-    (
-        (lparam.0 & 0xFFFF) as i16 as f32 / s,
-        ((lparam.0 >> 16) & 0xFFFF) as i16 as f32 / s,
-    )
-}
-
-/// 現在のカーソル位置をクライアント座標 (DIP) で。
-pub fn cursor(hwnd: HWND) -> (f32, f32) {
-    let mut pt = POINT::default();
-    // SAFETY: カーソル位置の取得と変換
-    unsafe {
-        let _ = GetCursorPos(&mut pt);
-        let _ = windows::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut pt);
-    }
-    let s = scale(hwnd);
-    (pt.x as f32 / s, pt.y as f32 / s)
-}
-
-pub fn scale(hwnd: HWND) -> f32 {
-    // SAFETY: 有効なウィンドウ
-    unsafe { GetDpiForWindow(hwnd) }.max(96) as f32 / 96.0
 }
 
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {

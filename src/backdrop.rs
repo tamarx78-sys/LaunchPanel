@@ -208,41 +208,38 @@ fn wic() -> Option<IWICImagingFactory> {
     unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok() }
 }
 
-fn image_size(path: &str) -> Option<(u32, u32)> {
-    let wic = wic()?;
+/// 画像ファイルの最初のフレーム。読めなければ None。
+pub fn open_frame(wic: &IWICImagingFactory, path: &str) -> Option<IWICBitmapFrameDecode> {
     let wide = to_wide(path);
-    // SAFETY: WIC による寸法の取得のみ
+    // SAFETY: WIC によるファイルの読込のみ
     unsafe {
-        let decoder = wic
-            .CreateDecoderFromFilename(
-                PCWSTR(wide.as_ptr()),
-                None,
-                GENERIC_READ,
-                WICDecodeMetadataCacheOnDemand,
-            )
-            .ok()?;
-        let frame = decoder.GetFrame(0).ok()?;
-        let (mut w, mut h) = (0, 0);
-        frame.GetSize(&mut w, &mut h).ok()?;
-        Some((w, h))
+        wic.CreateDecoderFromFilename(
+            PCWSTR(wide.as_ptr()),
+            None,
+            GENERIC_READ,
+            WICDecodeMetadataCacheOnDemand,
+        )
+        .ok()?
+        .GetFrame(0)
+        .ok()
     }
+}
+
+/// 画像ファイルの寸法 (ピクセル)。読めなければ None。
+pub fn image_size(path: &str) -> Option<(u32, u32)> {
+    let frame = open_frame(&wic()?, path)?;
+    let (mut w, mut h) = (0, 0);
+    // SAFETY: 寸法の取得のみ
+    unsafe { frame.GetSize(&mut w, &mut h) }.ok()?;
+    Some((w, h))
 }
 
 /// 画像を `w`×`h` に縮小 (拡大) して BGRA で読む。
 pub fn decode_scaled(path: &str, w: u32, h: u32) -> Option<Pixels> {
     let wic = wic()?;
-    let wide = to_wide(path);
-    // SAFETY: WIC による読込・拡大縮小・形式変換
+    let frame = open_frame(&wic, path)?;
+    // SAFETY: WIC による拡大縮小・形式変換
     unsafe {
-        let decoder = wic
-            .CreateDecoderFromFilename(
-                PCWSTR(wide.as_ptr()),
-                None,
-                GENERIC_READ,
-                WICDecodeMetadataCacheOnDemand,
-            )
-            .ok()?;
-        let frame = decoder.GetFrame(0).ok()?;
         let scaler = wic.CreateBitmapScaler().ok()?;
         scaler
             .Initialize(&frame, w, h, WICBitmapInterpolationModeFant)
