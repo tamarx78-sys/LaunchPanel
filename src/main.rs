@@ -20,6 +20,7 @@ mod platform;
 mod render;
 mod services;
 mod settings;
+mod skin;
 mod ui;
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
@@ -51,6 +52,9 @@ fn main() {
     if source != LoadSource::Current {
         log::write(&format!("設定を読み込みました: {source:?}"));
     }
+
+    // 描画の準備 (字体など) より前にスキンを決める
+    skin::set(&config.settings.skin);
 
     let Some(hwnd) = create_window() else {
         log::write("ウィンドウを作成できませんでした。");

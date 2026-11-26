@@ -23,6 +23,7 @@ The screenshots show the Japanese UI.
 - Customizable button color, transparency, text color, and bold text
 - Group buttons visually by giving each one the standard color or one of colors 1–5 (from the right-click menu or the edit window)
 - Settings window that works entirely with the mouse (sliders, switches, a color picker, drag and drop)
+- Skins (Standard / Fallout-style green terminal) that change the colors, font, and drawing style of every window
 - Global hotkey (default: `Ctrl + Alt + Shift + M`)
 - Double-click empty desktop space to show the window there (experimental)
 - Pinning, and automatic hiding when the window loses focus

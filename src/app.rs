@@ -28,7 +28,7 @@ use crate::platform::icon::Pixels;
 use crate::platform::shell::{self, ShellEvent};
 use crate::platform::wide::to_wide;
 use crate::platform::{desktop, foreground, shadow, window};
-use crate::render::{CachedBitmap, Color, Gfx, Rect, TextStyle};
+use crate::render::{CachedBitmap, Gfx, Rect, TextStyle};
 use crate::services::IconLoader;
 use crate::{items, layout};
 
@@ -66,10 +66,6 @@ const MOVE_TAU: f32 = 0.045;
 const SCROLL_TAU: f32 = 0.06;
 const FALLBACK_ICON_ID: u64 = 0;
 const FOOTER_HINT: &str = "ドラッグ＆ドロップで追加できます";
-
-const PILL: Color = Color::rgba(0x14, 0x15, 0x18, 0xB0);
-const PILL_HOVER: Color = Color::rgba(0x3A, 0x3C, 0x44, 0xE0);
-const OVERLAY_TEXT: Color = Color::rgba(0xE8, 0xE8, 0xEC, 0xFF);
 
 const DIR_LEFT: u8 = 1;
 const DIR_TOP: u8 = 2;
@@ -1111,8 +1107,9 @@ impl App {
         self.modal = self.modal.saturating_sub(1);
         match crate::settings::take_result().filter(|_| ok) {
             Some(new) => self.apply_settings(new),
-            // キャンセル: 試し表示した影と背景を保存済みの値へ戻す
+            // キャンセル: 試し表示した影・背景・スキンを保存済みの値へ戻す
             None => {
+                crate::skin::set(&self.settings.skin);
                 self.preview_look = None;
                 self.apply_look();
                 self.apply_shadow();
@@ -1151,6 +1148,7 @@ impl App {
                 );
             }
         }
+        crate::skin::set(&self.settings.skin);
         self.preview_look = None;
         self.apply_look();
         self.apply_shadow();
@@ -1248,23 +1246,26 @@ impl App {
         self.gfx.begin(self.backdrop.clear_color());
         self.backdrop.draw(&self.gfx, self.hwnd, &look, full);
         let gfx = &self.gfx;
+        let skin = crate::skin::palette();
+        let overlay_text = skin.overlay_text;
+        crate::ui::chrome_lines(gfx, self.width, TOP_BAR, self.height - FOOTER);
 
         // 上部: サイズと列数、設定、ピン留め
         let status =
             layout::status_text(self.width as f64, self.height as f64, self.column_count());
         let sw = gfx.measure_small(&status) + 16.0;
-        gfx.fill_round(Rect::new(8.0, 8.0, sw, 24.0), 6.0, PILL);
+        crate::ui::pill(gfx, Rect::new(8.0, 8.0, sw, 24.0), false);
         gfx.text(
             &status,
             Rect::new(8.0, 8.0, sw, 24.0),
-            OVERLAY_TEXT,
+            overlay_text,
             TextStyle::Small,
         );
         for (rect, hit, glyph) in [
             (self.gear_rect(), Hit::Gear, "\u{E713}"),
             (self.pin_rect(), Hit::Pin, ""),
         ] {
-            gfx.fill_round(rect, 6.0, if self.hover == hit { PILL_HOVER } else { PILL });
+            crate::ui::pill(gfx, rect, self.hover == hit);
             if hit == Hit::Pin {
                 // 未固定は傾いたピン、固定は直立したピン (色だけに頼らず向きで状態を示す)
                 let (cx, cy) = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
@@ -1274,12 +1275,12 @@ impl App {
                 gfx.text(
                     if self.pinned { "\u{E840}" } else { "\u{E718}" },
                     rect,
-                    OVERLAY_TEXT,
+                    overlay_text,
                     TextStyle::Glyph,
                 );
                 gfx.reset_transform();
             } else {
-                gfx.text(glyph, rect, OVERLAY_TEXT, TextStyle::Glyph);
+                gfx.text(glyph, rect, overlay_text, TextStyle::Glyph);
             }
         }
 
@@ -1303,8 +1304,8 @@ impl App {
             let bar_y = area.y + (area.h - bar_h) * (self.scroll / self.max_scroll().max(1.0));
             gfx.fill_round(
                 Rect::new(self.width - 5.0, bar_y, 3.0, bar_h),
-                1.5,
-                Color::rgba(255, 255, 255, 0x50),
+                crate::ui::rad(1.5),
+                skin.scrollbar,
             );
         }
         gfx.pop_clip();
@@ -1313,8 +1314,8 @@ impl App {
         let footer = self.footer.as_deref().unwrap_or(FOOTER_HINT);
         let fw = (gfx.measure_small(footer) + 16.0).min(self.width - 16.0);
         let fr = Rect::new((self.width - fw) / 2.0, self.height - 8.0 - 24.0, fw, 24.0);
-        gfx.fill_round(fr, 6.0, PILL);
-        gfx.text(footer, fr.inset(6.0, 0.0), OVERLAY_TEXT, TextStyle::Small);
+        crate::ui::pill(gfx, fr, false);
+        gfx.text(footer, fr.inset(6.0, 0.0), overlay_text, TextStyle::Small);
 
         // ドラッグ中のボタン (掴んだ位置関係を保ってカーソルへ追従)
         if let Some(d) = &self.drag
@@ -1328,6 +1329,7 @@ impl App {
             );
             self.draw_button(e, r, true, 0.92);
         }
+        crate::ui::scanlines(&self.gfx, full);
         self.gfx.end();
 
         if animating {
