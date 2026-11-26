@@ -197,7 +197,7 @@ pub fn palette() -> &'static Palette {
 /// 画素は乗算済みの BGRA。
 pub fn tinted(p: &Pixels, color: Color) -> Pixels {
     let mut data = p.data.clone();
-    for px in data.chunks_exact_mut(4) {
+    for px in data.as_chunks_mut::<4>().0 {
         let a = px[3] as f32;
         if a == 0.0 {
             continue;
