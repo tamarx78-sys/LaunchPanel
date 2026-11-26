@@ -3,6 +3,7 @@
 //! 背景画像があれば最優先し、ぼかしの強さ (0 ならそのまま) と暗さを掛けて敷く。
 //! 無ければ背景の種類に従う。アクリルは DWM のシステム背景を使い、使えない環境
 //! (Windows 10・古い Windows 11) では壁紙ぼかしで代用する。
+//! 地の色・暗さの色と、背景の上に重ねる色はスキンが決める。
 
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap;
@@ -42,9 +43,6 @@ impl Look {
     }
 }
 
-const SOLID: Color = Color::rgba(0x22, 0x23, 0x28, 0xFF);
-const TINT: Color = Color::rgba(0x14, 0x15, 0x18, 0xFF);
-
 #[derive(Default)]
 pub struct BackdropView {
     acrylic: bool,
@@ -80,7 +78,7 @@ impl BackdropView {
         if self.acrylic {
             Color(0.0, 0.0, 0.0, 0.0)
         } else {
-            SOLID
+            crate::skin::palette().solid
         }
     }
 
@@ -105,8 +103,12 @@ impl BackdropView {
         } else if self.follows_position(look) {
             self.draw_wallpaper(gfx, hwnd, look.blur, full);
         }
+        let skin = crate::skin::palette();
+        if let Some(overlay) = skin.backdrop_overlay {
+            gfx.fill_rect(full, overlay);
+        }
         if look.tint > 0 {
-            gfx.fill_rect(full, TINT.with_alpha(look.tint as f32 / 100.0 * 0.92));
+            gfx.fill_rect(full, skin.tint.with_alpha(look.tint as f32 / 100.0 * 0.92));
         }
     }
 

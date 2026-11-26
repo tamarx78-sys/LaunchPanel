@@ -177,6 +177,8 @@ pub struct Settings {
     pub tint: i32,
     pub item_button: ItemButtonSettings,
     pub desktop_double_click: bool,
+    /// スキンの id ([`crate::skin::SKINS`])。知らない id は既定のスキンとして読む
+    pub skin: String,
 }
 
 impl Default for Settings {
@@ -190,6 +192,7 @@ impl Default for Settings {
             tint: DEFAULT_TINT,
             item_button: ItemButtonSettings::default(),
             desktop_double_click: false,
+            skin: crate::skin::default_id().to_owned(),
         }
     }
 }
@@ -280,6 +283,10 @@ fn read_settings(node: &Map<String, Value>, s: &mut Settings) {
         }
     }
     s.desktop_double_click = boolean(node.get("desktop_double_click")).unwrap_or(false);
+    s.skin = string(node.get("skin"))
+        .filter(|id| crate::skin::index_of(id).is_some())
+        .unwrap_or(crate::skin::default_id())
+        .to_owned();
 }
 
 fn read_items(array: &[Value]) -> Vec<Item> {
@@ -379,6 +386,7 @@ pub fn serialize(config: &Config) -> String {
                 "group_colors": b.group_colors.iter().map(|c| [c.0, c.1, c.2]).collect::<Vec<_>>(),
             },
             "desktop_double_click": s.desktop_double_click,
+            "skin": s.skin,
         },
         "items": config.items.iter().map(item_json).collect::<Vec<_>>(),
     });
@@ -518,6 +526,7 @@ mod tests {
             ],
         };
         c.settings.desktop_double_click = true;
+        c.settings.skin = "fallout".into();
         c.items.push(Item {
             name: "Example".into(),
             path: r"C:\Path\To\Example.exe".into(),
@@ -615,6 +624,21 @@ mod tests {
         let (c, _) = parse(r#"{"settings":{"backdrop":"glass","blur":"x"}}"#).unwrap();
         assert_eq!(c.settings.backdrop, Backdrop::Wallpaper);
         assert_eq!(c.settings.blur, DEFAULT_BLUR);
+    }
+
+    #[test]
+    fn skin_values() {
+        let (c, _) = parse(r#"{"settings":{}}"#).unwrap();
+        assert_eq!(c.settings.skin, "standard");
+        let (c, _) = parse(r#"{"settings":{"skin":"fallout"}}"#).unwrap();
+        assert_eq!(c.settings.skin, "fallout");
+        // 知らないスキン (新しい版で増えたものなど) と型違いは既定のスキン
+        for json in [
+            r#"{"settings":{"skin":"future-skin"}}"#,
+            r#"{"settings":{"skin":3}}"#,
+        ] {
+            assert_eq!(parse(json).unwrap().0.settings.skin, "standard");
+        }
     }
 
     #[test]

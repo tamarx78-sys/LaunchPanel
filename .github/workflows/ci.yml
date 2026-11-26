@@ -22,3 +22,11 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Run tests
         run: cargo test --all-targets --all-features
+      - name: Build release
+        run: cargo build --release
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: LaunchPanel-${{ github.sha }}
+          path: target/release/LaunchPanel.exe
+          if-no-files-found: error

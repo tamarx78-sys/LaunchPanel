@@ -138,7 +138,7 @@ impl EditDialog {
             );
             // Enter (保存) と Esc (キャンセル) を入力欄からも受け付ける
             let _ = SetWindowSubclass(edit, Some(edit_keys), 1, hwnd.0 as usize);
-            let brush = CreateSolidBrush(colorref(ui::CONTROL));
+            let brush = CreateSolidBrush(colorref(ui::pal().control));
             (edit, brush)
         };
         droptarget::register(hwnd);
@@ -241,6 +241,10 @@ impl EditDialog {
     /// DPI に合わせた入力欄のフォント。
     fn update_font(&mut self) {
         let s = window::scale(self.hwnd);
+        // 描画と同じ字体 (スキンによる)
+        let family = crate::platform::wide::to_wide(
+            self.gfx.as_ref().map_or("Segoe UI", |g| g.font_family()),
+        );
         // SAFETY: フォントの生成と差し替え (古いものは解放する)
         unsafe {
             let font = CreateFontW(
@@ -257,7 +261,7 @@ impl EditDialog {
                 CLIP_DEFAULT_PRECIS,
                 CLEARTYPE_QUALITY,
                 0,
-                w!("Segoe UI"),
+                PCWSTR(family.as_ptr()),
             );
             SendMessageW(
                 self.name_edit,
@@ -370,46 +374,50 @@ impl EditDialog {
         gfx.refresh_bitmap(&mut self.icon_bitmap, self.icon.as_ref());
         let gfx = self.gfx.as_ref().unwrap();
         let cw = self.content_width();
-        gfx.begin(ui::BG);
+        gfx.begin(ui::pal().bg);
 
         gfx.text(
             "名前",
             Rect::new(MARGIN, 16.0, cw, 26.0),
-            ui::TEXT,
+            ui::pal().text,
             TextStyle::Label,
         );
         let frame = self.name_frame();
         // SAFETY: フォーカスの参照
         let focused = unsafe { GetFocus() } == self.name_edit;
-        gfx.fill_round(frame, 6.0, ui::CONTROL);
+        gfx.fill_round(frame, ui::rad(6.0), ui::pal().control);
         gfx.stroke_round(
             frame,
-            6.0,
-            if focused { ui::ACCENT } else { ui::BORDER },
+            ui::rad(6.0),
+            if focused {
+                ui::pal().accent
+            } else {
+                ui::pal().border
+            },
             if focused { 1.5 } else { 1.0 },
         );
         gfx.text(
             "空欄にすると、パスから自動で名前を付けます。",
             Rect::new(MARGIN, frame.y + frame.h + 6.0, cw, 20.0),
-            ui::MUTED,
+            ui::pal().muted,
             TextStyle::Caption,
         );
 
         gfx.text(
             "パスまたは URL",
             Rect::new(MARGIN, PATH_BOX_Y - 30.0, cw, 26.0),
-            ui::TEXT,
+            ui::pal().text,
             TextStyle::Label,
         );
         let pb = self.path_box();
-        gfx.fill_round(pb, 8.0, ui::PANEL);
+        gfx.fill_round(pb, ui::rad(8.0), ui::pal().panel);
         gfx.stroke_round(
             pb,
-            8.0,
+            ui::rad(8.0),
             if self.drag_over {
-                ui::ACCENT
+                ui::pal().accent
             } else {
-                ui::BORDER
+                ui::pal().border
             },
             if self.drag_over { 2.0 } else { 1.0 },
         );
@@ -429,19 +437,19 @@ impl EditDialog {
             pb.h - 16.0,
         );
         gfx.push_clip(pb.inset(2.0, 6.0));
-        gfx.text(&self.path, text_r, ui::TEXT, TextStyle::Caption);
+        gfx.text(&self.path, text_r, ui::pal().text, TextStyle::Caption);
         gfx.pop_clip();
         gfx.text(
             "ファイル・フォルダー・ブラウザーのリンクをこの画面へドロップするか、選択して変更します。",
             Rect::new(MARGIN, pb.y + pb.h + 8.0, cw, 36.0),
-            ui::MUTED,
+            ui::pal().muted,
             TextStyle::Caption,
         );
 
         gfx.text(
             "ボタンの色",
             Rect::new(MARGIN, COLOR_Y - 30.0, cw, 26.0),
-            ui::TEXT,
+            ui::pal().text,
             TextStyle::Label,
         );
         gfx.text(
@@ -450,13 +458,13 @@ impl EditDialog {
                 crate::app::color_label(self.color)
             ),
             Rect::new(MARGIN, COLOR_Y + SWATCH_H + 8.0, cw, 20.0),
-            ui::MUTED,
+            ui::pal().muted,
             TextStyle::Caption,
         );
 
         gfx.fill_rect(
             Rect::new(0.0, self.height - FOOTER, self.width, FOOTER),
-            ui::PANEL,
+            ui::pal().panel,
         );
         for (t, r) in self.controls() {
             let st = State {
@@ -472,10 +480,10 @@ impl EditDialog {
                     ui::swatch(gfx, r, Color::rgba(c.0, c.1, c.2, 255), st);
                     if i == self.color {
                         // 選んでいる色は外側の輪と印で示す
-                        gfx.stroke_round(r.inset(-3.0, -3.0), 8.0, ui::ACCENT, 2.0);
+                        gfx.stroke_round(r.inset(-3.0, -3.0), ui::rad(8.0), ui::pal().accent, 2.0);
                         let light =
                             c.0 as u32 * 299 + c.1 as u32 * 587 + c.2 as u32 * 114 > 150_000;
-                        let mark = if light { ui::BG } else { ui::TEXT };
+                        let mark = if light { ui::pal().bg } else { ui::pal().text };
                         gfx.text("\u{E73E}", r, mark, TextStyle::Glyph);
                     }
                     continue;
@@ -526,8 +534,8 @@ impl Dialog for EditDialog {
                 let hdc = HDC(wparam.0 as *mut _);
                 // SAFETY: 渡された DC への色設定
                 unsafe {
-                    SetTextColor(hdc, colorref(ui::TEXT));
-                    SetBkColor(hdc, colorref(ui::CONTROL));
+                    SetTextColor(hdc, colorref(ui::pal().text));
+                    SetBkColor(hdc, colorref(ui::pal().control));
                 }
                 return Some(LRESULT(self.edit_brush.0 as isize));
             }

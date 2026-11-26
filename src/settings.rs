@@ -5,8 +5,8 @@
 //! - 色: 色見本から開く選択パネル (彩度・明度の平面、色相の帯、色見本)
 //! - 修飾キー: トグルボタン (最後の1つは外せない)、文字キー: 一覧から選ぶ
 //!
-//! 編集中の値はこの画面の中だけで持ち、OK で本体へ渡す。影の設定だけは操作中から本体へ
-//! 試し表示し、キャンセルでは本体が保存済みの値へ戻す。
+//! 編集中の値はこの画面の中だけで持ち、OK で本体へ渡す。影・背景・スキンだけは操作中から
+//! 本体へ試し表示し、キャンセルでは本体が保存済みの値へ戻す。
 
 use std::cell::RefCell;
 
@@ -93,6 +93,7 @@ pub fn open(owner: HWND, current: &Settings, icon: Option<&Pixels>) -> bool {
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum T {
+    Skin,
     ColumnWidth,
     Shadow,
     ShadowOpacity,
@@ -231,7 +232,7 @@ impl SettingsDialog {
             l.texts.push((
                 text.into(),
                 Rect::new(MARGIN, *y, cw, 30.0),
-                ui::TEXT,
+                ui::pal().text,
                 TextStyle::Heading,
             ));
             *y += 38.0;
@@ -251,7 +252,7 @@ impl SettingsDialog {
             l.texts.push((
                 label.into(),
                 Rect::new(MARGIN, *y, cw - w - 12.0, ROW),
-                ui::TEXT,
+                ui::pal().text,
                 TextStyle::Label,
             ));
             let r = Rect::new(right - w, *y + (ROW - h) / 2.0, w, h);
@@ -267,7 +268,7 @@ impl SettingsDialog {
             l.texts.push((
                 format!("{value}%"),
                 Rect::new(r.x + r.w - 48.0, r.y, 48.0, r.h),
-                ui::MUTED,
+                ui::pal().muted,
                 TextStyle::Value,
             ));
         };
@@ -277,10 +278,21 @@ impl SettingsDialog {
             l.texts.push((
                 text,
                 Rect::new(r.x - 150.0, r.y, 140.0, r.h),
-                ui::MUTED,
+                ui::pal().muted,
                 TextStyle::Value,
             ));
         };
+
+        // 0. スキン
+        heading(&mut l, &mut y, "スキン");
+        row(&mut l, &mut y, "見た目", T::Skin, 220.0, CTRL_H);
+        caption(
+            &mut l,
+            &mut y,
+            "メインウィンドウ・設定画面・編集画面の配色と字体をまとめて切り替えます。選ぶとすぐに反映され、キャンセルで元に戻ります。",
+            ui::pal().muted,
+        );
+        y += 12.0;
 
         // 1. ウィンドウ
         heading(&mut l, &mut y, "ウィンドウ");
@@ -304,7 +316,7 @@ impl SettingsDialog {
             &mut l,
             &mut y,
             "1列の幅は左右にドラッグして変えます (Shift で 1px 単位)。影の設定は操作中から本体に反映され、キャンセルで元に戻ります。",
-            ui::MUTED,
+            ui::pal().muted,
         );
         y += 12.0;
 
@@ -319,22 +331,22 @@ impl SettingsDialog {
             .push((T::Clear, Rect::new(MARGIN + 108.0, y, 100.0, CTRL_H)));
         y += CTRL_H + 10.0;
         match &self.background_message {
-            Some((m, true)) => caption(&mut l, &mut y, m, ui::ERROR),
-            Some((m, false)) => caption(&mut l, &mut y, m, ui::WARNING),
+            Some((m, true)) => caption(&mut l, &mut y, m, ui::pal().error),
+            Some((m, false)) => caption(&mut l, &mut y, m, ui::pal().warning),
             None => caption(
                 &mut l,
                 &mut y,
                 &format!(
                     "画像ファイルをドロップするか、参照から選びます。幅・高さとも {MAX_IMAGE}px 未満の画像を指定できます。"
                 ),
-                ui::MUTED,
+                ui::pal().muted,
             ),
         }
         // 画像がない時の背景 (なし / 壁紙ぼかし / アクリル)
         l.texts.push((
             "画像がない時の背景".into(),
             Rect::new(MARGIN, y, cw, ROW),
-            ui::TEXT,
+            ui::pal().text,
             TextStyle::Label,
         ));
         let mut x = right;
@@ -353,14 +365,14 @@ impl SettingsDialog {
             &mut l,
             &mut y,
             "ぼかしの強さは壁紙ぼかしと背景画像に効きます。アクリルは裏のウィンドウも透けて見えますが、ぼかしの強さは Windows が決めます (Windows 11 のみ。使えない環境では壁紙ぼかしになります)。",
-            ui::MUTED,
+            ui::pal().muted,
         );
         if self.draft.backdrop == Backdrop::Acrylic && !transparency_enabled() {
             caption(
                 &mut l,
                 &mut y,
                 "Windows の「透明効果」がオフのため、アクリルは単色で表示されます (設定 > 個人用設定 > 色 > 透明効果)。",
-                ui::WARNING,
+                ui::pal().warning,
             );
         }
         y += 12.0;
@@ -368,6 +380,14 @@ impl SettingsDialog {
         // 3. ボタン
         let b = &self.draft.item_button;
         heading(&mut l, &mut y, "ボタン");
+        if !self.skin().palette.uses_button_colors() {
+            caption(
+                &mut l,
+                &mut y,
+                "このスキンでは、背景色 (標準)・透過率・テキスト色の代わりにスキンの配色を使います。グループの色はボタン左端の帯で示し、太字の設定はそのまま効きます。",
+                ui::pal().warning,
+            );
+        }
         color_row(
             &mut l,
             &mut y,
@@ -379,7 +399,7 @@ impl SettingsDialog {
         l.texts.push((
             "グループの色 (1～5)".into(),
             Rect::new(MARGIN, y, cw, ROW),
-            ui::TEXT,
+            ui::pal().text,
             TextStyle::Label,
         ));
         for i in 1..BUTTON_COLORS {
@@ -392,7 +412,7 @@ impl SettingsDialog {
             &mut l,
             &mut y,
             "ボタンの右クリックメニューの「ボタンの色」か編集画面で、ボタンごとに色を割り当てられます。",
-            ui::MUTED,
+            ui::pal().muted,
         );
         slider_row(
             &mut l,
@@ -407,7 +427,7 @@ impl SettingsDialog {
         l.texts.push((
             "プレビュー (ポインターを重ねると強調表示)".into(),
             Rect::new(MARGIN, y, cw, 20.0),
-            ui::MUTED,
+            ui::pal().muted,
             TextStyle::Caption,
         ));
         y += 24.0;
@@ -431,7 +451,7 @@ impl SettingsDialog {
         l.texts.push((
             "+".into(),
             Rect::new(x, y, 20.0, ROW),
-            ui::MUTED,
+            ui::pal().muted,
             TextStyle::Value,
         ));
         l.controls.push((
@@ -440,12 +460,12 @@ impl SettingsDialog {
         ));
         y += ROW + 4.0;
         match &self.hotkey_message {
-            Some(m) => caption(&mut l, &mut y, m, ui::ERROR),
+            Some(m) => caption(&mut l, &mut y, m, ui::pal().error),
             None => caption(
                 &mut l,
                 &mut y,
                 "ホットキーの変更は次回起動時から有効になります。Win は現在のバージョンでは変更できません。",
-                ui::MUTED,
+                ui::pal().muted,
             ),
         }
         y += 12.0;
@@ -464,7 +484,7 @@ impl SettingsDialog {
             &mut l,
             &mut y,
             "Windows の更新、Explorer の構成、他のアプリのフックやオーバーレイによって、動作が影響を受ける場合があります。",
-            ui::MUTED,
+            ui::pal().muted,
         );
         l.height = y + 8.0;
         l
@@ -751,6 +771,52 @@ impl SettingsDialog {
         }
     }
 
+    /// 編集中のスキン。
+    fn skin(&self) -> &'static crate::skin::Skin {
+        &crate::skin::SKINS[crate::skin::index_of(&self.draft.skin).unwrap_or(0)]
+    }
+
+    /// スキンを一覧から選ぶ。選んだらすぐに全画面へ試し表示する。
+    fn choose_skin(&mut self, anchor: Rect) {
+        let s = window::scale(self.hwnd);
+        let mut pt = POINT {
+            x: (anchor.x * s) as i32,
+            y: ((anchor.y + anchor.h) * s) as i32,
+        };
+        let current = self.skin().id;
+        // SAFETY: メニューは関数内で生成・破棄する
+        let cmd = unsafe {
+            let _ = ClientToScreen(self.hwnd, &mut pt);
+            let Ok(menu) = CreatePopupMenu() else { return };
+            for (i, skin) in crate::skin::SKINS.iter().enumerate() {
+                let mut flags = MF_STRING;
+                if skin.id == current {
+                    flags |= MF_CHECKED;
+                }
+                let label = crate::platform::wide::to_wide(skin.name);
+                // コマンド ID 0 は「選ばなかった」なので 1 から
+                let _ = AppendMenuW(menu, flags, i + 1, PCWSTR(label.as_ptr()));
+            }
+            let cmd = TrackPopupMenu(
+                menu,
+                TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN,
+                pt.x,
+                pt.y,
+                None,
+                self.hwnd,
+                None,
+            );
+            let _ = DestroyMenu(menu);
+            cmd.0 as usize
+        };
+        if let Some(skin) = cmd.checked_sub(1).and_then(|i| crate::skin::SKINS.get(i)) {
+            self.draft.skin = skin.id.to_owned();
+            crate::skin::set(skin.id);
+            // 本体も描き直させる (スキンは UI スレッド全体で共通)
+            self.preview_look();
+        }
+    }
+
     fn target_color(&self, target: ColorTarget) -> Rgb {
         match target {
             ColorTarget::Button(i) => self.draft.item_button.color(i),
@@ -930,6 +996,11 @@ impl SettingsDialog {
                     self.choose_key(a);
                 }
             }
+            T::Skin => {
+                if let Some(a) = anchor {
+                    self.choose_skin(a);
+                }
+            }
             T::Preset(i) => self.set_picked(color::PRESETS[i], None),
             T::PickClose => self.picker = None,
             T::Ok => return self.finish(true),
@@ -990,7 +1061,7 @@ impl SettingsDialog {
         let layout = self.layout();
         self.scroll = self.scroll.clamp(0.0, self.max_scroll(&layout));
         let gfx = self.gfx.as_ref().unwrap();
-        gfx.begin(ui::BG);
+        gfx.begin(ui::pal().bg);
 
         gfx.push_clip(self.content_view());
         for (text, r, color, style) in &layout.texts {
@@ -1006,7 +1077,7 @@ impl SettingsDialog {
             gfx.fill_round(
                 Rect::new(self.width - 6.0, bar_y + 2.0, 3.0, bar_h - 4.0),
                 1.5,
-                ui::BORDER,
+                ui::pal().border,
             );
         }
         gfx.pop_clip();
@@ -1014,7 +1085,7 @@ impl SettingsDialog {
         // 下部の OK / キャンセル (スクロールしない)
         gfx.fill_rect(
             Rect::new(0.0, self.height - FOOTER, self.width, FOOTER),
-            ui::PANEL,
+            ui::pal().panel,
         );
         for (t, r) in self.footer_controls() {
             ui::button(
@@ -1046,6 +1117,7 @@ impl SettingsDialog {
         let d = &self.draft;
         let rgb = |c: Rgb| Color::rgba(c.0, c.1, c.2, 255);
         match t {
+            T::Skin => ui::dropdown(gfx, r, self.skin().name, st),
             T::ColumnWidth => ui::scrubber(gfx, r, &format!("{} px", self.column_width()), st),
             T::Shadow => ui::switch(gfx, r, d.window.shadow, st),
             T::Bold => ui::switch(gfx, r, d.item_button.bold_text, st),
@@ -1084,7 +1156,7 @@ impl SettingsDialog {
             .thumbnail
             .as_ref()
             .and_then(|(_, p, b)| (p == path).then_some(b.as_ref()).flatten());
-        gfx.fill_round(r, 8.0, ui::PANEL);
+        gfx.fill_round(r, ui::rad(8.0), ui::pal().panel);
         if let Some(b) = bitmap {
             gfx.push_clip(r.inset(1.0, 1.0));
             gfx.bitmap_cover(b, r);
@@ -1093,29 +1165,43 @@ impl SettingsDialog {
                 .map_or(path.clone(), |n| n.to_string_lossy().into_owned());
             let bar = Rect::new(r.x, r.y + r.h - 26.0, r.w, 26.0);
             gfx.fill_rect(bar, Color::rgba(0x10, 0x11, 0x14, 0xC0));
-            gfx.text(&name, bar.inset(10.0, 0.0), ui::TEXT, TextStyle::Label);
+            gfx.text(
+                &name,
+                bar.inset(10.0, 0.0),
+                ui::pal().text,
+                TextStyle::Label,
+            );
             gfx.pop_clip();
         } else {
             gfx.text(
                 "\u{EB9F}",
                 Rect::new(r.x, r.y + 22.0, r.w, 30.0),
-                ui::MUTED,
+                ui::pal().muted,
                 TextStyle::Glyph,
             );
             gfx.text(
                 "画像ファイルをここへドロップ (クリックで参照)",
                 Rect::new(r.x, r.y + 56.0, r.w, 24.0),
-                ui::MUTED,
+                ui::pal().muted,
                 TextStyle::Value,
             );
             gfx.text(
                 "背景画像なし",
                 Rect::new(r.x, r.y + 80.0, r.w, 20.0),
-                ui::DISABLED,
+                ui::pal().disabled,
                 TextStyle::Small,
             );
         }
-        gfx.stroke_round(r, 8.0, if st.hover { ui::ACCENT } else { ui::BORDER }, 1.5);
+        gfx.stroke_round(
+            r,
+            ui::rad(8.0),
+            if st.hover {
+                ui::pal().accent
+            } else {
+                ui::pal().border
+            },
+            1.5,
+        );
     }
 
     /// 編集中の外観でアイテムボタンを描く (背景画像があれば下に敷く)。
@@ -1123,7 +1209,7 @@ impl SettingsDialog {
         let gfx = self.gfx.as_ref().unwrap();
         let path = &self.draft.background_image;
         gfx.push_clip(r);
-        gfx.fill_round(r, 8.0, Color::rgba(0x22, 0x23, 0x28, 0xFF));
+        gfx.fill_round(r, ui::rad(8.0), ui::pal().solid);
         if let Some(b) = self
             .thumbnail
             .as_ref()
@@ -1155,7 +1241,7 @@ impl SettingsDialog {
             1.0,
         );
         gfx.pop_clip();
-        gfx.stroke_round(r, 8.0, ui::BORDER, 1.0);
+        gfx.stroke_round(r, ui::rad(8.0), ui::pal().border, 1.0);
     }
 
     fn draw_picker(&self) {
@@ -1166,11 +1252,11 @@ impl SettingsDialog {
         let panel = rects[0].1;
         gfx.fill_round(
             Rect::new(panel.x + 2.0, panel.y + 4.0, panel.w, panel.h),
-            10.0,
+            ui::rad(10.0),
             Color::rgba(0, 0, 0, 0x60),
         );
-        gfx.fill_round(panel, 10.0, ui::PANEL);
-        gfx.stroke_round(panel, 10.0, ui::BORDER, 1.0);
+        gfx.fill_round(panel, ui::rad(10.0), ui::pal().panel);
+        gfx.stroke_round(panel, ui::rad(10.0), ui::pal().border, 1.0);
         for (t, r) in &rects[1..] {
             match t {
                 T::PickSv => {
@@ -1215,13 +1301,13 @@ impl SettingsDialog {
         let close = rects.last().unwrap().1;
         gfx.fill_round(
             Rect::new(panel.x + 12.0, close.y + 4.0, 24.0, 24.0),
-            5.0,
+            ui::rad(5.0),
             Color::rgba(c.0, c.1, c.2, 255),
         );
         gfx.text(
             &format!("R {}  G {}  B {}", c.0, c.1, c.2),
             Rect::new(panel.x + 44.0, close.y, close.x - panel.x - 50.0, close.h),
-            ui::MUTED,
+            ui::pal().muted,
             TextStyle::Label,
         );
     }

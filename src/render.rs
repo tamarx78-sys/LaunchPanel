@@ -106,8 +106,62 @@ pub enum TextStyle {
     Caption,
 }
 
-/// 作った時のレンダーターゲットの世代付きのビットマップ ([`Gfx::refresh_bitmap`] で更新する)。
+/// 作った時のレンダーターゲットの世代とスキンを表す値付きのビットマップ ([`Gfx::refresh_bitmap`] で更新する)。
 pub type CachedBitmap = Option<(u64, ID2D1Bitmap)>;
+
+/// スキンの字体で作る文字の書式 (記号フォントは除く)。
+struct Fonts {
+    family: String,
+    item: IDWriteTextFormat,
+    item_bold: IDWriteTextFormat,
+    small: IDWriteTextFormat,
+    heading: IDWriteTextFormat,
+    label: IDWriteTextFormat,
+    value: IDWriteTextFormat,
+    caption: IDWriteTextFormat,
+}
+
+impl Fonts {
+    /// `candidates` のうち最初にインストールされている字体で作る。
+    fn new(dwrite: &IDWriteFactory, candidates: &[&str]) -> Result<Self> {
+        let family = candidates
+            .iter()
+            .find(|f| has_font(dwrite, f))
+            .or(candidates.first())
+            .copied()
+            .unwrap_or("Segoe UI")
+            .to_owned();
+        let wide = crate::platform::wide::to_wide(&family);
+        let ui = PCWSTR(wide.as_ptr());
+        let (left, center) = (DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_CENTER);
+        let (normal, bold) = (DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_BOLD);
+        // SAFETY: テキスト書式の生成 (wide は呼び出し中有効)
+        unsafe {
+            let f = Self {
+                item: text_format(dwrite, ui, normal, 13.0, left, false)?,
+                item_bold: text_format(dwrite, ui, bold, 13.0, left, false)?,
+                small: text_format(dwrite, ui, normal, 12.0, center, false)?,
+                heading: text_format(dwrite, ui, DWRITE_FONT_WEIGHT_SEMI_BOLD, 17.0, left, false)?,
+                label: text_format(dwrite, ui, normal, 13.0, left, false)?,
+                value: text_format(dwrite, ui, normal, 13.0, center, false)?,
+                caption: text_format(dwrite, ui, normal, 12.0, left, true)?,
+                family,
+            };
+            for t in [&f.item, &f.item_bold, &f.label, &f.value, &f.small] {
+                let sign = dwrite.CreateEllipsisTrimmingSign(t)?;
+                t.SetTrimming(
+                    &DWRITE_TRIMMING {
+                        granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                        delimiter: 0,
+                        delimiterCount: 0,
+                    },
+                    &sign,
+                )?;
+            }
+            Ok(f)
+        }
+    }
+}
 
 pub struct Gfx {
     d2d: ID2D1Factory,
@@ -115,14 +169,10 @@ pub struct Gfx {
     wic: IWICImagingFactory,
     target: Option<ID2D1HwndRenderTarget>,
     brush: Option<ID2D1SolidColorBrush>,
-    item: IDWriteTextFormat,
-    item_bold: IDWriteTextFormat,
-    small: IDWriteTextFormat,
+    fonts: Fonts,
+    /// 字体を作った時のスキンの番号
+    fonts_skin: usize,
     glyph: IDWriteTextFormat,
-    heading: IDWriteTextFormat,
-    label: IDWriteTextFormat,
-    value: IDWriteTextFormat,
-    caption: IDWriteTextFormat,
     /// レンダーターゲットを作り直すたびに増える。ビットマップはこの世代のものだけ有効
     pub generation: u64,
 }
@@ -135,13 +185,7 @@ impl Gfx {
             let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
             let wic: IWICImagingFactory =
                 CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
-
-            let ui = w!("Segoe UI");
-            let (left, center) = (DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_CENTER);
-            let item = text_format(&dwrite, ui, DWRITE_FONT_WEIGHT_NORMAL, 13.0, left, false)?;
-            let item_bold = text_format(&dwrite, ui, DWRITE_FONT_WEIGHT_BOLD, 13.0, left, false)?;
-            let small = text_format(&dwrite, ui, DWRITE_FONT_WEIGHT_NORMAL, 12.0, center, false)?;
-            let glyph_family = if has_font(&dwrite, w!("Segoe Fluent Icons")) {
+            let glyph_family = if has_font(&dwrite, "Segoe Fluent Icons") {
                 w!("Segoe Fluent Icons")
             } else {
                 w!("Segoe MDL2 Assets")
@@ -151,54 +195,53 @@ impl Gfx {
                 glyph_family,
                 DWRITE_FONT_WEIGHT_NORMAL,
                 14.0,
-                center,
+                DWRITE_TEXT_ALIGNMENT_CENTER,
                 false,
             )?;
-            let heading =
-                text_format(&dwrite, ui, DWRITE_FONT_WEIGHT_SEMI_BOLD, 17.0, left, false)?;
-            let label = text_format(&dwrite, ui, DWRITE_FONT_WEIGHT_NORMAL, 13.0, left, false)?;
-            let value = text_format(&dwrite, ui, DWRITE_FONT_WEIGHT_NORMAL, 13.0, center, false)?;
-            let caption = text_format(&dwrite, ui, DWRITE_FONT_WEIGHT_NORMAL, 12.0, left, true)?;
-            for f in [&item, &item_bold, &label, &value, &small] {
-                let sign = dwrite.CreateEllipsisTrimmingSign(f)?;
-                f.SetTrimming(
-                    &DWRITE_TRIMMING {
-                        granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
-                        delimiter: 0,
-                        delimiterCount: 0,
-                    },
-                    &sign,
-                )?;
-            }
+            let fonts_skin = crate::skin::current_index();
+            let fonts = Fonts::new(&dwrite, crate::skin::palette().fonts)?;
             Ok(Self {
                 d2d,
                 dwrite,
                 wic,
                 target: None,
                 brush: None,
-                item,
-                item_bold,
-                small,
+                fonts,
+                fonts_skin,
                 glyph,
-                heading,
-                label,
-                value,
-                caption,
                 generation: 0,
             })
         }
     }
 
+    /// いまの文字の字体名 (ネイティブの入力欄にも同じ字体を使うため)。
+    pub fn font_family(&self) -> &str {
+        &self.fonts.family
+    }
+
+    /// スキンが変わっていれば字体を作り直す。
+    fn sync_skin(&mut self) {
+        let skin = crate::skin::current_index();
+        if skin == self.fonts_skin {
+            return;
+        }
+        match Fonts::new(&self.dwrite, crate::skin::palette().fonts) {
+            Ok(f) => self.fonts = f,
+            Err(e) => crate::log::write(&format!("スキンの字体を作れません: {e}")),
+        }
+        self.fonts_skin = skin;
+    }
+
     fn format(&self, style: TextStyle) -> &IDWriteTextFormat {
         match style {
-            TextStyle::Item => &self.item,
-            TextStyle::ItemBold => &self.item_bold,
-            TextStyle::Small => &self.small,
+            TextStyle::Item => &self.fonts.item,
+            TextStyle::ItemBold => &self.fonts.item_bold,
+            TextStyle::Small => &self.fonts.small,
             TextStyle::Glyph => &self.glyph,
-            TextStyle::Heading => &self.heading,
-            TextStyle::Label => &self.label,
-            TextStyle::Value => &self.value,
-            TextStyle::Caption => &self.caption,
+            TextStyle::Heading => &self.fonts.heading,
+            TextStyle::Label => &self.fonts.label,
+            TextStyle::Value => &self.fonts.value,
+            TextStyle::Caption => &self.fonts.caption,
         }
     }
 
@@ -221,8 +264,9 @@ impl Gfx {
         }
     }
 
-    /// レンダーターゲットが無ければ作る。
+    /// レンダーターゲットが無ければ作る。描画の始めに呼ぶので、スキンの字体の追従もここで行う。
     pub fn ensure_target(&mut self, hwnd: HWND) -> Result<()> {
+        self.sync_skin();
         if self.target.is_some() {
             return Ok(());
         }
@@ -476,13 +520,19 @@ impl Gfx {
         }
     }
 
-    /// `cache` が今のレンダーターゲットの世代で作ったものでなければ、`pixels` から作り直す
+    /// `cache` が今のレンダーターゲットの世代・スキンで作ったものでなければ、`pixels` から作り直す
     /// (レンダーターゲットを作り直すと、古いビットマップは使えなくなる)。
+    /// アイコン用で、スキンがアイコンの単色化を指定していればその色にする。
     pub fn refresh_bitmap(&self, cache: &mut CachedBitmap, pixels: Option<&Pixels>) {
-        if cache.as_ref().is_none_or(|(g, _)| *g != self.generation) {
+        let key = self.generation << 8 | crate::skin::current_index() as u64;
+        if cache.as_ref().is_none_or(|(k, _)| *k != key) {
+            let tint = crate::skin::palette().icon_tint;
             *cache = pixels
-                .and_then(|p| self.create_bitmap(p))
-                .map(|b| (self.generation, b));
+                .and_then(|p| match tint {
+                    Some(c) => self.create_bitmap(&crate::skin::tinted(p, c)),
+                    None => self.create_bitmap(p),
+                })
+                .map(|b| (key, b));
         }
     }
 
@@ -566,7 +616,9 @@ unsafe fn text_format(
     }
 }
 
-fn has_font(dwrite: &IDWriteFactory, family: PCWSTR) -> bool {
+fn has_font(dwrite: &IDWriteFactory, family: &str) -> bool {
+    let wide = crate::platform::wide::to_wide(family);
+    let family = PCWSTR(wide.as_ptr());
     // SAFETY: システムフォントの検索のみ
     unsafe {
         let mut collection = None;
